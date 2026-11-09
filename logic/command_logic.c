@@ -45,16 +45,25 @@
 #include "status_logic.h"
 #include "dji_protocol_parser.h"
 #include "dji_protocol_data_structures.h"
-#include "../gps/gps_reader.h"
+
 #include "../main/ui.h"
 
 /* Logging tag for ESP_LOG functions */
 #define TAG "LOGIC_COMMAND"
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+#include "freertos/portmacro.h"
+#include "../main/headless/headless_app.h"
+#endif
 
 /* Global sequence number generator for command tracking
  * Each command gets a unique sequence number to match with responses
  */
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+static uint16_t s_current_seq = 0;
+static portMUX_TYPE s_seq_mux = portMUX_INITIALIZER_UNLOCKED;
+#else
 uint16_t s_current_seq = 0;
+#endif
 
 /**
  * @brief Generate unique sequence number for command tracking
@@ -66,7 +75,14 @@ uint16_t s_current_seq = 0;
  * @return Unique 16-bit sequence number
  */
 uint16_t generate_seq(void) {
+    #ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    portENTER_CRITICAL(&s_seq_mux);
+    uint16_t seq = ++s_current_seq;
+    portEXIT_CRITICAL(&s_seq_mux);
+    return seq;
+#else
     return s_current_seq += 1;
+#endif
 }
 
 /**
@@ -86,7 +102,14 @@ static bool camera_can_accept_commands(int camera_index, uint8_t cmd_set, uint8_
     extern camera_state_t g_camera_states[NUM_CAMERAS];
     
     // Check if camera is sleeping
-    if (g_camera_states[camera_index].is_sleeping) {
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    headless_state_lock();
+    bool sleeping = g_camera_states[camera_index].is_sleeping;
+    headless_state_unlock();
+#else
+    bool sleeping = g_camera_states[camera_index].is_sleeping;
+#endif
+    if (sleeping) {
         // Exception: Wake commands (Camera Power Mode Settings, feature ID 001A)
         // CmdSet=0x00, CmdID=0x1A with power_mode=0x00 is allowed even when sleeping
         if (cmd_set == 0x00 && cmd_id == 0x1A && input_raw_data != NULL) {

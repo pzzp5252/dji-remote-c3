@@ -2,18 +2,26 @@ menu "Board Selection"
 
     choice BOARD_TARGET
         prompt "Target board"
+        default BOARD_ESP32C3_HEADLESS if IDF_TARGET_ESP32C3
         default BOARD_M5STACK_BASIC_V27
+
+        config BOARD_ESP32C3_HEADLESS
+            bool "CORE-ESP32-C3 headless dual-camera remote"
+            depends on IDF_TARGET_ESP32C3
 
         config BOARD_M5STACK_BASIC_V27
             bool "M5Stack Basic v2.7 (ESP32)"
+            depends on IDF_TARGET_ESP32
 
         config BOARD_WAVESHARE_S3_LCD19
             bool "Waveshare ESP32-S3-LCD-1.9 (ESP32-S3)"
+            depends on IDF_TARGET_ESP32S3
     endchoice
 
 endmenu
 
 menu "GPS Configuration"
+    depends on !BOARD_ESP32C3_HEADLESS
 
     config GPS_UART_NUM
         int "UART port number for GPS"
@@ -46,4 +54,26 @@ menu "GPS Configuration"
         help
             GPIO number for GPS UART RX (GPS to ESP).
 
+endmenu
+
+menu "Headless dual-camera remote"
+    depends on BOARD_ESP32C3_HEADLESS
+
+    config HEADLESS_BUTTON_GPIO
+        int "Active-low recording button GPIO"
+        default 9
+        range 0 21
+        help
+            CORE-ESP32-C3 BOOT is GPIO9. Do not hold it during reset,
+            unless you intend to enter the ROM download mode.
+
+    config HEADLESS_LED1_GPIO
+        int "Camera 1 active-high LED GPIO (-1 disables)"
+        default 12
+        range -1 21
+
+    config HEADLESS_LED2_GPIO
+        int "Camera 2 active-high LED GPIO (-1 disables)"
+        default 13
+        range -1 21
 endmenu

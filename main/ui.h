@@ -18,10 +18,13 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "connect_logic.h"
+#include "sdkconfig.h"
+#ifndef CONFIG_BOARD_ESP32C3_HEADLESS
 #include "ui_screen_main.h"
 #include "ui_screen_pairing.h"
 #include "ui_screen_settings.h"
 #include "ui_screen_mode_switch.h"
+#endif
 
 // UI Screen definitions
 typedef enum {

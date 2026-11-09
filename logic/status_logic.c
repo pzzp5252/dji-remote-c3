@@ -26,7 +26,7 @@
 #include "command_logic.h"
 #include "dji_protocol_data_structures.h"
 #include "../main/ui.h"
-#include "../main/m5stack_basic_v27_hal.h"  // For M5_COLOR constants
+
 
 static const char *TAG = "LOGIC_STATUS";
 
@@ -349,6 +349,12 @@ void update_camera_state_handler(int camera_index, void *data) {
             }
         }
     }
+
+    /* A reconnect invalidates the derived flags while raw status may be unchanged.
+     * Recompute on every push so the first repeated status restores the truth. */
+    cam_state->is_recording = parsed_data->camera_status == CAMERA_STATUS_PHOTO_OR_RECORDING ||
+                              parsed_data->camera_status == CAMERA_STATUS_PRE_RECORDING;
+    cam_state->is_sleeping = parsed_data->power_mode == 3;
 
     // Mark camera state as initialized
     bool was_just_initialized = false;

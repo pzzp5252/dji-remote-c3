@@ -49,6 +49,9 @@
 
 /* Logging tag for ESP_LOG functions */
 #define TAG "LOGIC_CONNECT"
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+#include "../main/headless/headless_app.h"
+#endif
 
 /* Boot scan timeout in milliseconds */
 #define BOOT_SCAN_TIMEOUT_MS 30000
@@ -107,6 +110,10 @@ connect_state_t connect_logic_get_state(void) {
  * to maintain seamless operation during temporary connection issues.
  */
 void receive_camera_disconnect_handler() {
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    /* Called on the NimBLE host. The headless worker owns all reconnects. */
+    return;
+#else
     switch (connect_state) {
         case BLE_SEARCHING:
             /* Already searching - no action needed */
@@ -154,6 +161,7 @@ void receive_camera_disconnect_handler() {
             break;
         }
     }
+#endif
 }
 
 /**
@@ -453,57 +461,73 @@ int connect_logic_protocol_connect(int camera_index, uint32_t device_id, uint8_t
     ESP_LOGI(TAG, "Sending connection request to camera %d...", camera_index);
     CommandResult result = send_command(camera_index, 0x00, 0x19, CMD_WAIT_RESULT, &connection_request, seq, 1000);
 
-    /**** Connection issue: camera may return either response frame or command frame ****/
-
-    if (result.structure == NULL) {
-        // If a command frame is sent, execute this block of code
-
-        // Directly call data_wait_for_result_by_cmd(0x00, 0x19, 30000, &received_seq, &parse_result, &parse_result_length);
-        
-        // If != OK, it means no message was received, timeout occurred
-        
-        // Otherwise, GOTO wait_for_camera_command label
-        void *parse_result = NULL;
-        size_t parse_result_length = 0;
-        uint16_t received_seq = 0;
-        esp_err_t ret = data_wait_for_result_by_cmd(0x00, 0x19, 1000, &received_seq, &parse_result, &parse_result_length);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Timeout or error waiting for camera connection command, GOTO Failed.");
-            if (camera_index >= 0 && camera_index < 3) {
-                s_slot_is_connecting[camera_index] = false;
-            }
-            connect_logic_ble_disconnect(camera_index);
-            return -1;
-        } else {
-            // If data is received, skip parsing camera response and directly enter STEP3
-            goto wait_for_camera_command;
-        }
-    }
-
-    // STEP2: Parse the response returned from camera
-    connection_request_response_frame *response = (connection_request_response_frame *)result.structure;
-    if (response->ret_code != 0) {
-        ESP_LOGE(TAG, "Connection handshake failed: unexpected response from camera, ret_code: %d", response->ret_code);
-        if (camera_index >= 0 && camera_index < 3) {
-            s_slot_is_connecting[camera_index] = false;
-        }
-        free(response);
-        connect_logic_ble_disconnect(camera_index);
-        return -1;
-    }
-
-    ESP_LOGI(TAG, "Handshake successful, waiting for the camera to actively send the connection command frame...");
-    free(response);
-
-    // STEP3: Wait for camera to send connection request
-wait_for_camera_command:
+    /* The camera can ACK first or send its own connection command directly.
+     * Keep the ACK probe short, but allow time for a person to accept pairing.
+     * data_wait_for_result_by_cmd consumes its entry, so use its returned object
+     * directly rather than waiting for the same camera command a second time. */
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    /* Mode 0 asks the camera to use its history, and may still show a prompt
+     * for an unknown remote. Local saved pairing decides the human wait. */
+    headless_state_lock();
+    bool pairing_is_saved = camera_index >= 0 && camera_index < NUM_CAMERAS &&
+                            g_camera_states[camera_index].is_paired;
+    headless_state_unlock();
+    const int camera_command_timeout_ms = pairing_is_saved ? 30000 : 60000;
+#else
+    const int camera_command_timeout_ms = verify_mode == 1 ? 60000 : 30000;
+#endif
     void *parse_result = NULL;
     size_t parse_result_length = 0;
     uint16_t received_seq = 0;
-    esp_err_t ret = data_wait_for_result_by_cmd(0x00, 0x19, 30000, &received_seq, &parse_result, &parse_result_length);
+    esp_err_t ret = ESP_OK;
+    uint32_t command_wait_start = xTaskGetTickCount();
 
-    if (ret != ESP_OK || parse_result == NULL) {
-        ESP_LOGE(TAG, "Timeout or error waiting for camera connection command");
+    if (result.structure != NULL && result.length == sizeof(connection_request_command_frame)) {
+        /* A command with the same SEQ may satisfy the initial sequence wait. */
+        parse_result = result.structure;
+        parse_result_length = result.length;
+        received_seq = seq;
+    } else {
+        if (result.structure != NULL) {
+            connection_request_response_frame *response = result.structure;
+            if (result.length < sizeof(*response) || response->ret_code != 0) {
+                ESP_LOGE(TAG, "Connection handshake response was invalid or rejected");
+                free(response);
+                if (camera_index >= 0 && camera_index < 3) {
+                    s_slot_is_connecting[camera_index] = false;
+                }
+                connect_logic_ble_disconnect(camera_index);
+                return -1;
+            }
+            free(response);
+        }
+        ESP_LOGI(TAG, "Waiting up to %d ms for camera confirmation", camera_command_timeout_ms);
+        ret = data_wait_for_result_by_cmd(0x00, 0x19, camera_command_timeout_ms,
+                                         &received_seq, &parse_result, &parse_result_length);
+    }
+
+    /* An ACK arriving after the short sequence wait is stored by command ID.
+     * Discard successful late ACKs and retain the original confirmation deadline. */
+    while (ret == ESP_OK && parse_result != NULL &&
+           parse_result_length == sizeof(connection_request_response_frame)) {
+        connection_request_response_frame *late_response = parse_result;
+        bool accepted = late_response->ret_code == 0;
+        free(parse_result);
+        parse_result = NULL;
+        uint32_t elapsed_ms = (uint32_t)(xTaskGetTickCount() - command_wait_start) * portTICK_PERIOD_MS;
+        if (!accepted || elapsed_ms >= (uint32_t)camera_command_timeout_ms) {
+            ret = ESP_ERR_TIMEOUT;
+            break;
+        }
+        ret = data_wait_for_result_by_cmd(0x00, 0x19,
+                                         camera_command_timeout_ms - (int)elapsed_ms,
+                                         &received_seq, &parse_result, &parse_result_length);
+    }
+
+    if (ret != ESP_OK || parse_result == NULL ||
+        parse_result_length < sizeof(connection_request_command_frame)) {
+        ESP_LOGE(TAG, "Timeout or invalid camera connection command");
+        free(parse_result);
         if (camera_index >= 0 && camera_index < 3) {
             s_slot_is_connecting[camera_index] = false;
         }
@@ -519,6 +543,9 @@ wait_for_camera_command:
     ESP_LOGI(TAG, "Camera %d device_id: 0x%04X", camera_index, (unsigned int)camera_device_id);
     
     // Save device_id to camera state for persistent model name display
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    headless_state_lock();
+#endif
     g_camera_states[camera_index].device_id = camera_device_id;
     
     // Set model name based on device_id
@@ -526,6 +553,9 @@ wait_for_camera_command:
     strncpy(g_camera_states[camera_index].model_name, model_name, 
             sizeof(g_camera_states[camera_index].model_name) - 1);
     g_camera_states[camera_index].model_name[sizeof(g_camera_states[camera_index].model_name) - 1] = '\0';
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    headless_state_unlock();
+#endif
     ESP_LOGI(TAG, "Camera %d identified as: %s", camera_index, model_name);
 
     if (camera_request->verify_mode != 2) {
@@ -571,6 +601,7 @@ wait_for_camera_command:
         extern int subscript_camera_status(int camera_index, uint8_t push_mode, uint8_t push_freq);
         subscript_camera_status(camera_index, 3, 20);  // PUSH_MODE_PERIODIC_WITH_STATE_CHANGE=3, PUSH_FREQ_2HZ=20
         
+#ifndef CONFIG_BOARD_ESP32C3_HEADLESS
         // Save camera pairing (including device_id) to NVS for persistence
         esp_err_t save_err = save_all_cameras_to_nvs();
         if (save_err == ESP_OK) {
@@ -580,6 +611,8 @@ wait_for_camera_command:
             ESP_LOGW(TAG, "Failed to save camera %d pairing to NVS", camera_index);
         }
         
+#endif
+
         free(parse_result);
         return 0;
     } else {

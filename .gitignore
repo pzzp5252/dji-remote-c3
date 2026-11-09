@@ -7,3 +7,7 @@
 sdkconfig.old
 /release
 /.cache
+/build-c3
+/sdkconfig.c3
+/sdkconfig.c3.old
+/backups/

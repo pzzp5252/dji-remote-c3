@@ -1,3 +1,21 @@
+# Component requirements are collected before sdkconfig is loaded.
+if(IDF_TARGET STREQUAL "esp32c3")
+    idf_component_register(
+        SRCS "headless/headless_app.c" "headless/dual_control.c"
+             "../utils/crc/custom_crc16.c" "../utils/crc/custom_crc32.c"
+             "../protocol/dji_protocol_parser.c"
+             "../protocol/dji_protocol_data_processor.c"
+             "../protocol/dji_protocol_data_descriptors.c"
+             "../protocol/dji_protocol_data_structures.c"
+             "../ble/ble.c" "../data/data.c"
+             "../logic/connect_logic.c" "../logic/command_logic.c"
+             "../logic/status_logic.c" "../logic/enums_logic.c"
+        PRIV_REQUIRES bt nvs_flash esp_driver_gpio esp_timer
+        INCLUDE_DIRS "." "headless" "../utils/crc" "../protocol"
+                     "../ble" "../data" "../logic" "../")
+    return()
+endif()
+
 set(SRCS "app_main.c"
          "ui.c"
          "ui_layout.c"

@@ -1,0 +1,32 @@
+name: Headless ESP32-C3
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/run_host_tests.sh
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build headless firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          tools/headless/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-esp32c3-headless
+          path: |
+            build-c3/bootloader/bootloader.bin
+            build-c3/partition_table/partition-table.bin
+            build-c3/dji_camera_bluetooth_control.bin
+            build-c3/flasher_args.json

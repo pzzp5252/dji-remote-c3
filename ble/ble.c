@@ -690,6 +690,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
             uint8_t buf[512];
             if (data_len > sizeof(buf)) data_len = sizeof(buf);
             os_mbuf_copydata(event->notify_rx.om, 0, data_len, buf);
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, buf, data_len > 64 ? 64 : data_len, ESP_LOG_INFO);
             s_notify_cb(profile->camera_index, buf, data_len);
         } else if (!s_notify_cb) {
             ESP_LOGW(TAG, "NOTIFY_RX: s_notify_cb is NULL!");
@@ -762,8 +763,12 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
 esp_err_t ble_init(void) {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+        return ret; /* Preserve pairings; recovery is an explicit maintenance action. */
+#else
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
+#endif
     }
     ESP_ERROR_CHECK(ret);
 
