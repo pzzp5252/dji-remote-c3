@@ -2,6 +2,8 @@
 if(IDF_TARGET STREQUAL "esp32c3")
     idf_component_register(
         SRCS "headless/headless_app.c" "headless/dual_control.c"
+             "headless/capture.c" "headless/journal.c" "headless/control_service.c"
+             "headless/phone_wire.c" "headless/phone_gatt.c" "headless/phone_service.c"
              "../utils/crc/custom_crc16.c" "../utils/crc/custom_crc32.c"
              "../protocol/dji_protocol_parser.c"
              "../protocol/dji_protocol_data_processor.c"
@@ -10,7 +12,7 @@ if(IDF_TARGET STREQUAL "esp32c3")
              "../ble/ble.c" "../data/data.c"
              "../logic/connect_logic.c" "../logic/command_logic.c"
              "../logic/status_logic.c" "../logic/enums_logic.c"
-        PRIV_REQUIRES bt nvs_flash esp_driver_gpio esp_timer
+        PRIV_REQUIRES bt nvs_flash esp_driver_gpio esp_driver_uart esp_timer json joltwallet__littlefs
         INCLUDE_DIRS "." "headless" "../utils/crc" "../protocol"
                      "../ble" "../data" "../logic" "../")
     return()

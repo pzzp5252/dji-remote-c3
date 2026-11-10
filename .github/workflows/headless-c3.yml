@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install host test dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libcjson-dev
       - run: tests/run_host_tests.sh
   firmware:
     runs-on: ubuntu-latest

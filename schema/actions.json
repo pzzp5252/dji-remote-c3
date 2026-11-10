@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "template_id": "CLEANROOM_SMOKE_V1",
+  "template_name": "洁净室层流烟雾气流流型验证示例",
+  "actions": [
+    {"action_id": "S01", "name": "静态气流流型检查", "type": "static", "group": "分装区", "order": 1},
+    {"action_id": "D27", "name": "人员操作期间气流流型检查", "type": "dynamic", "group": "灌装线", "order": 2,
+     "points": [{"point_id": "P01", "name": "操作口"}, {"point_id": "P02", "name": "物料传递口"}]}
+  ]
+}

@@ -10,6 +10,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "driver/gpio.h"
+#include "driver/uart_vfs.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_random.h"
@@ -23,6 +24,9 @@
 #include "command_logic.h"
 #include "dual_control.h"
 #include "headless_app.h"
+#include "control_service.h"
+#include "phone_service.h"
+#include "journal.h"
 
 #define TAG "HEADLESS"
 #define DISCOVERED_MAX 10
@@ -36,8 +40,12 @@ static SemaphoreHandle_t state_mutex;
 static QueueHandle_t discovery_queue, work_queue;
 static bool protocol_ready[2];
 static _Atomic bool worker_busy;
+static QueueHandle_t observation_queue;
+static cap_sample_t latest_samples[2];
+static _Atomic bool observation_overflow;
+typedef struct { int slot; cap_sample_t sample; } observation_t;
 static uint8_t remote_mac[6];
-static dc_control_t control;
+/* The capture service owns the take lifecycle; pairing remains in NVS. */
 static dc_button_t button;
 static uint32_t error_since;
 static bool error_active;
@@ -60,6 +68,7 @@ typedef struct {
 } stored_pair_t;
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time()/1000); }
+static uint64_t monotonic_ms(void) { return (uint64_t)(esp_timer_get_time()/1000); }
 void headless_state_lock(void) { xSemaphoreTake(state_mutex,portMAX_DELAY); }
 void headless_state_unlock(void) { xSemaphoreGive(state_mutex); }
 void wake_queue_notify_camera_woke_up(int slot) { (void)slot; }
@@ -98,6 +107,14 @@ static void status_received(int slot,void *data) {
     update_camera_state_handler(slot,data);
     /* Use the same monotonic clock as command confirmation (not tick quantization). */
     g_camera_states[slot].last_status_timestamp=now_ms();
+    latest_samples[slot]=(cap_sample_t){
+        .connected=true,.valid=g_camera_states[slot].is_initialized,
+        .video=g_camera_states[slot].camera_mode==CAMERA_MODE_NORMAL,
+        .sleeping=g_camera_states[slot].is_sleeping,.recording=g_camera_states[slot].is_recording,
+        .status_ms=(uint64_t)(esp_timer_get_time()/1000),.record_time=g_camera_states[slot].record_time,
+        .battery=g_camera_states[slot].camera_bat_percentage};
+    observation_t observation={.slot=slot,.sample=latest_samples[slot]};
+    if(xQueueSend(observation_queue,&observation,0)!=pdTRUE)atomic_store(&observation_overflow,true);
     headless_state_unlock();
 }
 static void new_status_received(int slot,void *data) {
@@ -171,6 +188,7 @@ static bool connect_slot(int slot,const discovery_t *new_camera) {
     camera_state_t *c=&g_camera_states[slot];
     protocol_ready[slot]=false;
     c->is_initialized=false;c->last_status_timestamp=0;c->is_recording=false;
+    latest_samples[slot]=(cap_sample_t){0};
     c->is_connected=false;c->is_sleeping=false;c->snapshot_pending=false;
     c->connection_state=CAM_STATE_CONNECTING;
     if(new_camera) {
@@ -261,44 +279,24 @@ static void connection_worker(void *unused) {
     }
 }
 
-static void snapshot(dc_camera_t out[2],bool paired[2],uint8_t battery[2]) {
+static void snapshot(cap_sample_t out[2]) {
     headless_state_lock();
     for(int i=0;i<2;i++) {
-        camera_state_t *c=&g_camera_states[i];
-        if(!ble_is_camera_connected(i)) {
-            protocol_ready[i]=false;c->is_connected=false;c->is_initialized=false;
-            c->last_status_timestamp=0;c->is_recording=false;
-            if(c->is_paired && c->connection_state!=CAM_STATE_CONNECTING)c->connection_state=CAM_STATE_PAIRED_DISCONNECTED;
-        }
-        out[i]=(dc_camera_t){.connected=protocol_ready[i] && ble_is_camera_connected(i),.valid=c->is_initialized,
-            .video=c->camera_mode==CAMERA_MODE_NORMAL,.sleeping=c->is_sleeping,.recording=c->is_recording,.status_ms=c->last_status_timestamp};
-        paired[i]=c->is_paired;battery[i]=c->camera_bat_percentage;
+        out[i]=latest_samples[i];
+        out[i].connected=protocol_ready[i] && ble_is_camera_connected(i);
+        if(!out[i].connected)out[i].valid=false;
     }
     headless_state_unlock();
 }
-static void indicate_error(void) { error_since=now_ms();error_active=true; }
-static void recording_request(dc_request_t request) {
-    dc_camera_t c[2];bool paired[2];uint8_t battery[2];
-    snapshot(c,paired,battery);
-    dc_result_t result=dc_begin(&control,c,now_ms(),request);
-    if(result==DC_BUSY) { ESP_LOGW(TAG,"BUSY: waiting for camera confirmation");return; }
-    if(result==DC_REJECTED) {
-        ESP_LOGW(TAG,"REJECTED: start needs both cameras online, awake, video mode and fresh status; stop needs an online camera");
-        indicate_error();return;
-    }
-    ESP_LOGI(TAG,"%s requested (mask=%u); waiting for new camera status",control.target?"START":"STOP",control.mask);
-    for(int i=0;i<2;i++)if(control.mask&(1u<<i)) {
-        /* Async API return means dispatch only. Status polling is authoritative. */
-        if(control.target)(void)command_logic_start_record_async(i);
-        else (void)command_logic_stop_record_async(i);
-    }
+static bool record_dispatch(void *ctx,int slot,bool start) {
+    (void)ctx;
+    return (start?command_logic_start_record_async(slot):command_logic_stop_record_async(slot))==ESP_OK;
 }
-static void print_status(void) {
-    dc_camera_t c[2];bool paired[2];uint8_t battery[2];
-    snapshot(c,paired,battery);uint32_t now=now_ms();
-    for(int i=0;i<2;i++)ESP_LOGI(TAG,"Slot %d paired=%d online=%d valid=%d age=%lu ms video=%d sleep=%d recording=%d battery=%u%%",
-        i+1,paired[i],c[i].connected,c[i].valid,(unsigned long)(now-c[i].status_ms),c[i].video,c[i].sleeping,c[i].recording,battery[i]);
-    ESP_LOGI(TAG,"command pending=%d; connection worker busy=%d",control.pending,atomic_load(&worker_busy));
+static void indicate_error(void) { error_since=now_ms();error_active=true; }
+static void recording_button(void) {
+    cap_sample_t samples[2];snapshot(samples);
+    control_service_button(samples,(uint64_t)(esp_timer_get_time()/1000));
+    if(!control_service_active())indicate_error();
 }
 static void print_discovered(void) {
     for(int i=0;i<discovered_count;i++) {
@@ -309,6 +307,15 @@ static void print_discovered(void) {
     if(!discovered_count)ESP_LOGI(TAG,"No discovered cameras; power on camera, disconnect Mimo/other remotes, use scan");
 }
 static void console_command(const char *line) {
+    cap_sample_t samples[2];snapshot(samples);
+    if(line[0]=='{') {
+        const char *end=NULL;
+        cJSON *command=cJSON_ParseWithOpts(line,&end,true);
+        const control_request_t origin={.transport=CONTROL_USB};
+        control_service_command(command,samples,monotonic_ms(),&origin);
+        cJSON_Delete(command);
+        return;
+    }
     if(!strcmp(line,"debug")) {
         const char *tags[]={"BLE","DATA","LOGIC_CONNECT","LOGIC_COMMAND"};
         for(unsigned i=0;i<sizeof(tags)/sizeof(tags[0]);i++)esp_log_level_set(tags[i],ESP_LOG_INFO);
@@ -319,13 +326,9 @@ static void console_command(const char *line) {
         esp_log_level_set(TAG,ESP_LOG_INFO);
         ESP_LOGI(TAG,"BLE/protocol diagnostics disabled");
     }
-    else if(!strcmp(line,"start"))recording_request(DC_START);
-    else if(!strcmp(line,"stop"))recording_request(DC_STOP);
-    else if(!strcmp(line,"toggle"))recording_request(DC_TOGGLE);
-    else if(!strcmp(line,"status"))print_status();
     else if(!strcmp(line,"list"))print_discovered();
     else if(!strcmp(line,"scan")) {
-        if(control.pending) { ESP_LOGW(TAG,"BUSY: wait for record result before scan");return; }
+        if(control_service_active()) { ESP_LOGW(TAG,"BUSY: close the take before scan");return; }
         discovered_count=0;
         work_t w={.scan=true};
         if(xQueueSend(work_queue,&w,0)!=pdTRUE)ESP_LOGW(TAG,"Connection queue busy");
@@ -338,12 +341,12 @@ static void console_command(const char *line) {
             bool paired=g_camera_states[slot-1].is_paired;
             bool duplicate=g_camera_states[2-slot].is_paired && !memcmp(g_camera_states[2-slot].camera_mac,discovered[index-1].mac,6);
             headless_state_unlock();
-            if(paired || duplicate || control.pending || atomic_load(&worker_busy)) {
+            if(paired || duplicate || control_service_active() || atomic_load(&worker_busy)) {
                 ESP_LOGW(TAG,"Pair rejected: slot occupied, duplicate camera or operation busy");return;
             }
             work_t w={.slot=slot-1,.camera=discovered[index-1]};
             if(xQueueSend(work_queue,&w,0)!=pdTRUE)ESP_LOGW(TAG,"Connection queue busy");
-        } else ESP_LOGI(TAG,"Commands: help | scan | list | pair <1|2> <index> | status | start | stop | toggle");
+        } else ESP_LOGI(TAG,"Commands: scan | list | pair <1|2> <index> | debug | quiet; JSON: INIT_PROJECT, SELECT_ACTION, START, STOP, TIME_SYNC, GET_STATUS, GET_LOG_INFO, EXPORT_LOG, GET_LOG, MARK_DISCARD, REASSIGN, RESET_PROJECT");
     }
 }
 static void receive_discovery(void) {
@@ -363,27 +366,24 @@ static void receive_discovery(void) {
     }
 }
 static void update_feedback(void) {
-    dc_camera_t c[2];bool paired[2];uint8_t battery[2];
-    snapshot(c,paired,battery);uint32_t now=now_ms();
-    if(control.pending) {
-        dc_result_t result=dc_poll(&control,c,now);
-        if(result==DC_CONFIRMED)ESP_LOGI(TAG,"CONFIRMED: both cameras %s",control.target?"recording":"stopped");
-        else if(result==DC_PARTIAL || result==DC_TIMEOUT || result==DC_FAILED) {
-            ESP_LOGW(TAG,"%s: both-camera success NOT confirmed; use status",result==DC_PARTIAL?"PARTIAL STOP":result==DC_TIMEOUT?"CONFIRMATION TIMEOUT":"LINK LOST");
-            indicate_error();
-        }
+    if(atomic_exchange(&observation_overflow,false))control_service_observation_lost();
+    observation_t observation;
+    static cap_sample_t observed[2];
+    while(xQueueReceive(observation_queue,&observation,0)==pdTRUE) {
+        observed[observation.slot]=observation.sample;
+        /* Replay queued transitions at their observation time, not export end. */
+        control_service_observe(observed,observation.sample.status_ms);
     }
-    if(error_active && (uint32_t)(now-error_since)>=3000)error_active=false;
+    cap_sample_t samples[2];snapshot(samples);
+    uint64_t now=(uint64_t)(esp_timer_get_time()/1000);
+    memcpy(observed,samples,sizeof(observed));
+    control_service_observe(samples,now);
+    if(error_active && (uint32_t)(now_ms()-error_since)>=3000)error_active=false;
     const int pins[2]={CONFIG_HEADLESS_LED1_GPIO,CONFIG_HEADLESS_LED2_GPIO};
     for(int i=0;i<2;i++) {
-        bool on;
-        if(error_active)on=(now/75)%2;
-        else if(!paired[i])on=false;
-        else if(!c[i].connected)on=(now/500)%2;
-        else if(!c[i].valid || (uint32_t)(now-c[i].status_ms)>DC_STALE_MS)on=(now%1000)<100 || ((now%1000)>=200 && (now%1000)<300);
-        else if(c[i].recording)on=(now/125)%2;
-        else if(c[i].sleeping)on=(now%2000)<100;
-        else on=true;
+        int mode=control_service_led(i,&samples[i],now);
+        bool on=mode==1 || (mode==2 && (now%1000)<500) || (mode==3 && (now%160)<80);
+        if(error_active)on=(now%160)<80;
         if(pins[i]>=0)gpio_set_level(pins[i],on);
     }
 }
@@ -391,14 +391,19 @@ void app_main(void) {
     state_mutex=xSemaphoreCreateMutex();
     discovery_queue=xQueueCreate(16,sizeof(discovery_t));
     work_queue=xQueueCreate(1,sizeof(work_t));
-    if(!state_mutex || !discovery_queue || !work_queue) { ESP_LOGE(TAG,"Failed to allocate queues/mutex");return; }
+    observation_queue=xQueueCreate(32,sizeof(observation_t));
+    if(!state_mutex || !discovery_queue || !work_queue || !observation_queue) { ESP_LOGE(TAG,"Failed to allocate queues/mutex");return; }
     /* No automatic erase: an NVS failure must not silently destroy pairings. */
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_read_mac(remote_mac,ESP_MAC_BT));
     load_pairings();
     esp_log_level_set("*",ESP_LOG_WARN);
     esp_log_level_set(TAG,ESP_LOG_INFO);
-    ESP_LOGI(TAG,"DJI-Remote CORE-ESP32-C3: BOOT short press toggles two cameras; console 115200 8N1");
+    ESP_LOGI(TAG,"DJI-Remote V1 capture journal: BOOT starts/stops a take; CH343P 115200 8N1");
+    if(!journal_open("/journal"))ESP_LOGE(TAG,"Journal unavailable: %s; START disabled, stop/export remain available",journal_error());
+    char boot_id[32];
+    snprintf(boot_id,sizeof(boot_id),"%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random());
+    control_service_init(boot_id,record_dispatch,NULL,monotonic_ms);
     const int leds[2]={CONFIG_HEADLESS_LED1_GPIO,CONFIG_HEADLESS_LED2_GPIO};
     for(int i=0;i<2;i++)if(leds[i]>=0) {
         gpio_reset_pin(leds[i]);ESP_ERROR_CHECK(gpio_set_direction(leds[i],GPIO_MODE_OUTPUT));gpio_set_level(leds[i],0);
@@ -413,10 +418,15 @@ void app_main(void) {
     if(xTaskCreate(connection_worker,"camera_connect",6144,NULL,3,NULL)!=pdPASS) { ESP_LOGE(TAG,"Connection worker creation failed");return; }
     setvbuf(stdin,NULL,_IONBF,0);
     (void)fcntl(STDIN_FILENO,F_SETFL,O_NONBLOCK);
+    /* Raw LF makes exported JSONL byte counts identical to Flash bytes. */
+    (void)uart_vfs_dev_port_set_tx_line_endings(CONFIG_ESP_CONSOLE_UART_NUM,ESP_LINE_ENDINGS_LF);
     console_command("help");
-    char line[96];size_t used=0;bool overflow=false;
+    char line[768];size_t used=0;bool overflow=false;
     for(;;) {
         receive_discovery();
+        update_feedback();
+        cap_sample_t phone_samples[2];snapshot(phone_samples);
+        phone_service_poll(phone_samples,monotonic_ms());
         int ch;
         while((ch=getchar())!=EOF) {
             if(ch=='\r' || ch=='\n') {
@@ -427,7 +437,7 @@ void app_main(void) {
             else if(ch>=32 && ch<127) { if(used<sizeof(line)-1)line[used++]=(char)ch;else overflow=true; }
         }
         clearerr(stdin);
-        if(dc_button_update(&button,gpio_get_level(CONFIG_HEADLESS_BUTTON_GPIO)==0,now_ms()))recording_request(DC_TOGGLE);
+        if(dc_button_update(&button,gpio_get_level(CONFIG_HEADLESS_BUTTON_GPIO)==0,now_ms()))recording_button();
         update_feedback();
         vTaskDelay(pdMS_TO_TICKS(20));
     }

@@ -11,3 +11,5 @@ sdkconfig.old
 /sdkconfig.c3
 /sdkconfig.c3.old
 /backups/
+__pycache__/
+*.pyc

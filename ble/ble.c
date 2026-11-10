@@ -30,6 +30,9 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+#include "../main/headless/phone_gatt.h"
+#endif
 #include "../main/ui.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -236,12 +239,19 @@ static SemaphoreHandle_t s_ble_sync_sem = NULL;
 static void on_sync(void) {
     ble_hs_util_ensure_addr(0);
     s_ble_ready = true;
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    phone_gatt_on_sync();
+#endif
     if (s_ble_sync_sem) {
         xSemaphoreGive(s_ble_sync_sem);
     }
 }
 
 static void on_reset(int reason) {
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    phone_gatt_on_reset();
+    s_advertising_active = false;
+#endif
     ESP_LOGW(TAG, "NimBLE host reset, reason=%d", reason);
 }
 
@@ -429,6 +439,11 @@ static int on_write_complete(uint16_t conn_handle,
  * ---------------------------------------------------------------- */
 
 static int gap_event_cb(struct ble_gap_event *event, void *arg) {
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    if (phone_gatt_gap_event(event)) {
+        return 0;
+    }
+#endif
     ble_profile_t *profile = NULL;
 
     switch (event->type) {
@@ -710,6 +725,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg) {
     /* ---------- Advertising complete ---------- */
     case BLE_GAP_EVENT_ADV_COMPLETE: {
         s_advertising_active = false;
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+        phone_gatt_suspend_advertising(false);
+#endif
         ESP_LOGI(TAG, "Advertising completed (reason=%d)", event->adv_complete.reason);
         break;
     }
@@ -804,6 +822,12 @@ esp_err_t ble_init(void) {
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_svc_gap_device_name_set("DJI-Remote");
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    ret = phone_gatt_init();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+#endif
 
     ble_gap_event_listener_register(&s_global_listener, global_event_listener, NULL);
 
@@ -1248,6 +1272,7 @@ static uint8_t adv_data[] = {
     10, 0xff, 'W','K','P','1','2','3','4','5','6'
 };
 
+#ifndef CONFIG_BOARD_ESP32C3_HEADLESS
 static esp_timer_handle_t adv_timer = NULL;
 
 static void stop_adv_after_3s(void* arg) {
@@ -1255,6 +1280,7 @@ static void stop_adv_after_3s(void* arg) {
     s_advertising_active = false;
     ESP_LOGI(TAG, "Wake broadcast advertising stopped after 3 seconds");
 }
+#endif
 
 esp_err_t ble_stop_advertising_early(void) {
     if (!s_advertising_active) {
@@ -1262,9 +1288,11 @@ esp_err_t ble_stop_advertising_early(void) {
         return ESP_ERR_INVALID_STATE;
     }
 
+#ifndef CONFIG_BOARD_ESP32C3_HEADLESS
     if (adv_timer != NULL) {
         esp_timer_stop(adv_timer);
     }
+#endif
 
     int rc = ble_gap_adv_stop();
     if (rc != 0 && rc != BLE_HS_EALREADY) {
@@ -1274,25 +1302,46 @@ esp_err_t ble_stop_advertising_early(void) {
     }
 
     s_advertising_active = false;
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    phone_gatt_suspend_advertising(false);
+#endif
     return ESP_OK;
 }
 
 static esp_err_t start_adv_with_data(const uint8_t *data, size_t data_len) {
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+    /* The shared legacy advertiser changes data, not existing phone links.
+     * C3 supports scanning while advertising; leave camera discovery alone. */
+    phone_gatt_suspend_advertising(true);
+    if (s_advertising_active) {
+        ble_gap_adv_stop();
+        s_advertising_active = false;
+    }
+#else
     /* NimBLE cannot scan and advertise simultaneously */
     if (s_ble_scan_active) {
         ble_gap_disc_cancel();
         s_ble_scan_active = false;
     }
+#endif
 
     int rc = ble_gap_adv_set_data(data, (int)data_len);
     if (rc != 0) {
         ESP_LOGE(TAG, "Failed to set adv data: %d", rc);
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+        phone_gatt_suspend_advertising(false);
+#endif
         return ESP_FAIL;
     }
 
     struct ble_gap_adv_params adv_params = {
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+        .conn_mode = BLE_GAP_CONN_MODE_NON,
+        .disc_mode = BLE_GAP_DISC_MODE_NON,
+#else
         .conn_mode = BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
+#endif
         .itvl_min  = 0x20,
         .itvl_max  = 0x40,
     };
@@ -1301,11 +1350,15 @@ static esp_err_t start_adv_with_data(const uint8_t *data, size_t data_len) {
                             &adv_params, gap_event_cb, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "Failed to start advertising: %d", rc);
+#ifdef CONFIG_BOARD_ESP32C3_HEADLESS
+        phone_gatt_suspend_advertising(false);
+#endif
         return ESP_FAIL;
     }
 
     s_advertising_active = true;
 
+#ifndef CONFIG_BOARD_ESP32C3_HEADLESS
     if (adv_timer == NULL) {
         const esp_timer_create_args_t timer_args = {
             .callback = &stop_adv_after_3s,
@@ -1314,6 +1367,7 @@ static esp_err_t start_adv_with_data(const uint8_t *data, size_t data_len) {
         esp_timer_create(&timer_args, &adv_timer);
     }
     esp_timer_start_once(adv_timer, 3000000);
+#endif
 
     return ESP_OK;
 }
