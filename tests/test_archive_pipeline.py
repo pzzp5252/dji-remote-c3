@@ -49,7 +49,9 @@ class FakeSerial:
 
 class Fixture:
     def __init__(self, root):
-        self.root = Path(root)
+        # macOS temp roots use the system /var symlink. Canonicalize only our
+        # owned fixture root; production output-symlink rejection stays intact.
+        self.root = Path(root).resolve()
         self.a, self.b, self.output = self.root / "A", self.root / "B", self.root / "output"
         self.a.mkdir(); self.b.mkdir()
         self.log = self.root / "project.jsonl"

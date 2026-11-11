@@ -12,15 +12,17 @@ ${CC:-clang} -std=c11 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefin
     -I main/headless tests/test_phone_wire.c main/headless/phone_wire.c -o "$bin"
 "$bin"
 # Set CJSON_CFLAGS/CJSON_LIBS for a non-system cJSON installation.
-for test in journal control_service phone_service; do
+# Darwin hides mkdtemp in strict POSIX mode unless its extension set is enabled.
+case "$(uname -s)" in Darwin) host_cflags=-D_DARWIN_C_SOURCE ;; *) host_cflags= ;; esac
+for test in journal control_service phone_service camera_selection; do
     sources="main/headless/journal.c"
-    if [ "$test" = control_service ] || [ "$test" = phone_service ]; then
+    if [ "$test" = control_service ] || [ "$test" = phone_service ] || [ "$test" = camera_selection ]; then
         sources="$sources main/headless/capture.c main/headless/control_service.c"
     fi
     if [ "$test" = phone_service ]; then
         sources="$sources main/headless/phone_service.c"
     fi
-    ${CC:-clang} -std=c11 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined \
+    ${CC:-clang} -std=c11 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined $host_cflags \
         -I main/headless -I tests/stubs ${CJSON_CFLAGS:--I/usr/include/cjson} \
         "tests/test_$test.c" $sources ${CJSON_LIBS:--lcjson} -lm -o "$bin"
     "$bin"

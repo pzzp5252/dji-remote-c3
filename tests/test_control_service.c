@@ -31,7 +31,7 @@ int main(void) {
     command("{\"cmd\":\"INIT_PROJECT\",\"project_id\":\"RUN_1\",\"template_id\":\"TEMPLATE_1\"}",100);
     assert(!strcmp(journal_state()->project_id,"RUN_1"));
     assert(!strcmp(journal_state()->template_id,"TEMPLATE_1"));
-    command("{\"cmd\":\"SELECT_ACTION\",\"project_id\":\"RUN_1\",\"action_id\":\"D27\",\"point_id\":\"P01\"}",100);
+    command("{\"cmd\":\"SELECT_ACTION\",\"project_id\":\"RUN_1\",\"action_id\":\"D27\",\"point_id\":\"P01\",\"target_cameras\":1}",100);
     command("{\"cmd\":\"TIME_SYNC\",\"utc_ms\":1794220000000}",100);
     command("{\"cmd\":\"START\",\"project_id\":\"RUN_1\",\"command_id\":\"C1\"}",101);
     assert(starts==1 && journal_state()->take_id==1 && control_service_active());

@@ -6,11 +6,13 @@
 
 ## 使用
 
-先用 USB 初始化项目并选择动作（下方 JSON 命令）。短按并松开 **BOOT** 创建拍摄，先提交 `TAKE_BEGIN` 再向就绪相机发 START；再次短按停止当前拍摄，包括仍等待 START 确认的情况。旧段结案后，只要没有已连接相机报告录像中，且至少一台相机状态新鲜、确认空闲、正常视频模式、未休眠，就可开始下一段；另一台记为未参与。未选动作、存储不足或旧段未结案时拒绝开始。
+先用 USB 或手机初始化项目并选择动作（下方 JSON 命令），明确选择双机、只拍 A 或只拍 B。短按并松开 **BOOT** 创建拍摄，先提交 `TAKE_BEGIN` 再仅向所选相机发 START；再次短按停止当前拍摄，包括仍等待 START 确认的情况。手机与 BOOT 共用持久保存的选机设置，新项目默认双机。所选相机必须全部状态新鲜、确认空闲、正常视频模式且未休眠；双机缺一台即拒绝，不自动降级。选择单机时另一台离线/休眠/状态陈旧不阻塞，但任何已连接相机报告录像（含陈旧缓存）仍阻止新段。未选动作、存储不足或旧段未结案时拒绝开始。
 
 按键消抖 30 ms，松开才触发。开机时已按住的 BOOT 不触发录像；必须先松开。上电或复位时按住 BOOT 会进入 ROM 下载模式，因此日常使用先松开再复位。RST 始终仅作复位，不用于录像。
 
-发送成功不是录像成功。逐机保存新状态确认、录像观察时间、原始录像计时、断连/恢复及意外停止/再录证据。开始确认超时不会反复 START；停止确认超时会提交异常 `TAKE_END`，不把未知状态写成已停止，也不因断连的 B 机永久阻止 A 机继续工作。连接中的相机恢复新鲜空闲推送后即可清除当前未知状态。无控制器上下文的外部录像记录为未归属动作的 external 拍摄。
+发送成功不是录像成功。逐机保存新状态确认、录像观察时间、原始录像计时、断连/恢复及意外停止/再录证据。开始确认超时不会反复 START；停止确认超时会提交异常 `TAKE_END`，不把未知状态写成已停止。旧段结案后可明确选择另一台继续，不静默改变选机设置。连接中的相机恢复新鲜空闲推送后即可清除当前未知状态。无控制器上下文的外部录像记录为未归属动作的 external 拍摄，不改变保存的选机设置。
+
+显式停止期间若另一台后来开始录像，再次按停止会覆盖尚未收到 STOP 的相机，但不延长原超时期限。日志无法接纳外部 BEGIN 时，BOOT 安全停止仅发给在线且报告录像的槽。异常 END 已结案而相机仍录像时，手机仍提供停止；匹配当前项目和最新拍摄编号的 STOP 可再次下发，不改写已结案证据。
 
 失联后自动逐槽重试，包括遥控器先开机、相机稍后开机的情况。两次尝试至少间隔 5 秒；一次扫描、连接和认证可能耗时几十秒。重连工作在独立任务上进行，主循环仍处理按键、控制台和反馈。恢复连接后不会自动开始或续录。
 
@@ -54,9 +56,9 @@ NVS 读取或版本异常不会触发自动全片擦除。两台设置到普通�
 
 ```json
 {"cmd":"INIT_PROJECT","project_id":"FZ3_202611_01","template_id":"CLEANROOM_SMOKE_V1"}
-{"cmd":"SELECT_ACTION","project_id":"FZ3_202611_01","action_id":"D27","point_id":"P01"}
+{"cmd":"SELECT_ACTION","project_id":"FZ3_202611_01","action_id":"D27","point_id":"P01","target_cameras":1}
 {"cmd":"TIME_SYNC","utc_ms":1794220000000}
-{"cmd":"START","project_id":"FZ3_202611_01","command_id":"USB_001"}
+{"cmd":"START","project_id":"FZ3_202611_01","command_id":"USB_001","target_cameras":1}
 {"cmd":"GET_STATUS"}
 {"cmd":"STOP","project_id":"FZ3_202611_01","take_id":1}
 {"cmd":"GET_LOG_INFO"}
@@ -65,17 +67,19 @@ NVS 读取或版本异常不会触发自动全片擦除。两台设置到普通�
 
 `TIME_SYNC.utc_ms` 应填写操作时真实 UTC Unix 毫秒；示例值仅演示格式，不应用于正式采集。时间锚点仅保存在 RAM，随后续离散事件落盘。新开机未同步时间的区间允许电脑端待确认。
 
+`target_cameras` 为整数：1=A、2=B、3=双机。SELECT_ACTION 省略时保留原设置；历史日志缺字段从默认双机开始恢复，不改写旧日志。START 省略时使用已保存设置，显式携带但与设备设置不符返回 `target_mismatch`。ACK、GET_LOG_INFO 与 STATUS 返回该设置；STATUS 的 `active_participants` 另表示当前段准入集合（空闲为0），不是已成功录像的数量。停止只下发到本段参与/观察到录像或当前报告录像的相机，不打扰未参与的空闲机。
+
 | 命令 | 参数与限制 |
 |---|---|
 | INIT_PROJECT | project_id、template_id；无拍摄记录且相机安全空闲时初始化，二者独立 |
-| SELECT_ACTION | project_id、action_id、可选 point_id；当前无活动拍摄，落盘后 ACK |
-| START | project_id、command_id；仅比对最新 BEGIN 的 command_id，重试返回原 take_id，不扫描历史 |
+| SELECT_ACTION | project_id、action_id、可选 point_id、target_cameras；无活动拍摄，保存成功后确认 |
+| START | project_id、command_id、可选 target_cameras 一致性检查；仅比对最新 BEGIN 的 command_id，重试返回原 take_id |
 | STOP | project_id、take_id；身份不符拒绝，防止迟到命令误停下一段 |
 | TIME_SYNC | utc_ms；当前 boot 的时间锚点 |
 | MARK_DISCARD | project_id、take_id、discard 布尔值；标废/取消标废 |
 | REASSIGN | project_id、take_id、action_id、可选 point_id；修改已结束拍摄归属 |
-| GET_STATUS | 项目、当前动作、拍摄阶段、A/B 状态、存储和同步状态 |
-| GET_LOG_INFO | project_id、template_id、event_seq、take_id、lines、bytes；bytes 含 LF |
+| GET_STATUS | 项目、当前动作、target_cameras、active_participants、拍摄阶段、A/B 状态、存储和同步状态 |
+| GET_LOG_INFO | project_id、template_id、event_seq、take_id、target_cameras、lines、bytes；bytes 含 LF |
 | EXPORT_LOG | 已结案时导出完整 JSONL，不清空项目 |
 | GET_LOG | after_seq；已结案时增量导出 |
 | RESET_PROJECT | project_id、event_seq、take_id、lines、bytes 和 confirm:true；必须与备份 tuple 完全相同，且无活动拍摄、所有在线相机确认未录像 |
@@ -128,10 +132,11 @@ idf.py -B build-c3 -D SDKCONFIG=sdkconfig.c3 -p /dev/cu.wchusbserialXXXX flash m
 主机策略回归测试：
 
 ```sh
+npm ci
 tests/run_host_tests.sh
 ```
 
-测试使用 C11、严格编译警告及 ASan/UBSan，覆盖 BOOT 消抖、逐机状态机、单机继续、取消开始、超时、外部录像、END 重试、日志恢复/损坏/写失败回滚/重置、命令身份与掉电恢复，以及手机分片协议、会话隔离、USB 权限限制和日志背压下的 STOP 分发。另有纯 Python MP4 探针测试及 26 项 ESM 客户端行为测试。主机需安装 Clang、cJSON 开发包（或设置 CJSON_CFLAGS/CJSON_LIBS）及 Node.js 24。这些测试不替代真实 LittleFS 掉电和无线链路验证。
+测试使用 C11、严格编译警告及 ASan/UBSan，覆盖 BOOT 消抖、逐机状态机、严格双机/显式单机准入、单机 STOP 隔离、迟到外部录像/结案后安全停止、选机持久恢复/无效值/START 意图一致性、取消开始、超时、外部录像、END 重试、日志恢复/损坏/写失败回滚/重置、命令身份与掉电恢复，以及手机分片协议、会话隔离、USB 权限限制和日志背压下的 STOP 分发。另有15项 Python MP4 探针、26项 ESM 客户端、24项 jsdom 手机 UI 与16项归档行为测试。主机需安装 Clang、cJSON 开发包（或设置 CJSON_CFLAGS/CJSON_LIBS）、Python 3、Node.js 24，并先运行 `npm ci`。Darwin 编译扩展已由入口处理；Mac 的 Homebrew cJSON 参数见 [开发交接](development-handoff.md)。这些测试不替代真实 LittleFS 掉电和无线链路验证；新增选机固件本轮未刷写/实测。
 
 本轮已在 Linux 主机以 Zig cc 0.17.1（C11、ASan/UBSan）执行控制/日志/命令及旧协议回归，并通过 15 项 Python 探针测试；另验证低空间准入边界及停止/导出不受 BEGIN 余量限制。实际 JSON 控制台烟测导出 3 条、1752 字节，核对首尾帧、精确字节数、错误备份 tuple 拒绝与确认 RESET。ESP-IDF 5.5.2 官方分区工具通过 4 MB 表校验。
 
@@ -184,7 +189,7 @@ idf.py -B build-c3 -D IDF_TARGET=esp32c3 -D SDKCONFIG=sdkconfig.c3 -D SDKCONFIG_
 
 烧录时将上文示例端口替换为新电脑的实际串口（Windows 如 `COM5`）。仅拉取项目或构建不会修改板内配对信息；不需要执行 `erase-flash` 或重新配对。仓库不包含本机工具链、构建缓存、原机 Flash 备份、NVS 或串口日志。
 
-当前源码包含 V1-P1 拍摄状态机、V1-P2 持久主账与 USB 管理、V1-P3 手机 GATT/状态通知/快照日志同步，以及可直接导入的 [Web Bluetooth ESM 客户端](../phone/ble-client.mjs)。[动作模板/事件契约](../schema/events.md)、[MP4 元数据探针](../schema/inspect-mp4.md) 与下述电脑端转换、USB 管理、A/B 独立匹配及正式归档工具已提供。手机页面仍在按现场操作语言修订，PWA 尚未验收；真实手机联调、Action 6 MP4 时间含义与分文件特征仍需实测。
+当前源码包含 V1-P1 拍摄状态机、V1-P2 持久主账与 USB 管理、V1-P3 手机 GATT/状态通知/快照日志同步，以及可直接导入的 [Web Bluetooth ESM 客户端](../phone/ble-client.mjs)。[动作模板/事件契约](../schema/events.md)、[MP4 元数据探针](../schema/inspect-mp4.md) 与下述电脑端转换、USB 管理、A/B 独立匹配及正式归档工具已提供。手机页面、PWA 与 Mac 全部主机回归现已完成；已验证独立 Chrome 进程重启后在服务器关闭的离线状态打开页面、读取模板和演示交互。真实手机 HTTPS/BLE、Action 6 MP4 时间含义与分文件特征仍需实测，详见 [开发交接](development-handoff.md)。
 
 工具按个人使用设计，不做云平台、视频监看、转码或大文件 SHA-256。归档工具必须只读原片，不删除、不移动、不修改原片名称；仅向新目录生成副本，同名不覆盖，废片只标记，不确定的匹配留待确认。
 

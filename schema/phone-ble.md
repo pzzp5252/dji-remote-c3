@@ -1,6 +1,6 @@
 # 手机 BLE 通信交接（协议 1）
 
-> 固件 BLE 后端与可复用原生 ESM [`phone/ble-client.mjs`](../phone/ble-client.mjs) 已提供；[手机页面](../phone/index.html) 正在进行现场操作文案与视觉验收，PWA 尚未验收。页面使用中文操作名称，设备诊断与错误码放在折叠详情中。Windows 原生 BLE 客户端加两台相机的三连接已做只读实测；真实手机浏览器尚未联调。BLE 没有应用层身份认证，附近能建立连接的客户端可操作拍摄与修改账本；设备选择框不是业务身份认证。仅在可信现场使用，不公开暴露控制权。
+> 固件 BLE 后端与可复用原生 ESM [`phone/ble-client.mjs`](../phone/ble-client.mjs) 已提供；[手机页面](../phone/index.html) 与 PWA 已完成 Mac 浏览器及主机回归，详见 [开发交接](../docs/development-handoff.md)。页面使用中文操作名称，设备诊断与错误码放在折叠详情中。Windows 原生 BLE 客户端加两台相机的三连接已做只读实测；真实手机浏览器尚未联调。BLE 没有应用层身份认证，附近能建立连接的客户端可操作拍摄与修改账本；设备选择框不是业务身份认证。仅在可信现场使用，不公开暴露控制权。
 
 ## UI 的业务边界
 
@@ -95,10 +95,10 @@ request_id 自动递增且同一连接内不复用；65535 个 ID 耗尽后返�
 | cmd | 参数/限制 |
 |---|---|
 | INIT_PROJECT | project_id,template_id；空项目且相机安全空闲时初始化；已有项目重置只经 USB |
-| SELECT_ACTION | project_id,action_id,可选 point_id；拍摄中拒绝，持久提交后 ACK |
+| SELECT_ACTION | project_id,action_id,可选 point_id,target_cameras；目标为整数 1=A、2=B、3=双机；省略目标时保留当前值，持久提交后 ACK；拍摄中拒绝修改 |
 | TIME_SYNC | utc_ms；当前 boot 时间锚点，不保证手机时钟准确 |
-| START | project_id,command_id；显式用户操作；仅最新 BEGIN 防重 |
-| STOP | project_id,take_id；显式用户操作；日志流进行时允许 |
+| START | project_id,command_id，可选 target_cameras 作为已确认选择的校验；不匹配返回 target_mismatch；仅最新 BEGIN 防重，重复不会再启动 |
+| STOP | project_id,take_id；显式用户操作；日志流进行时允许；结案后仍报告录像时，匹配最新编号可安全停止，不修改已提交 END |
 | MARK_DISCARD | project_id,take_id,discard（布尔）；标废/取消 |
 | REASSIGN | project_id,take_id,action_id,可选 point_id；修改已结束拍摄归属，不改 take_id |
 | GET_STATUS | 无额外参数；当前实时快照 |
@@ -107,9 +107,15 @@ request_id 自动递增且同一连接内不复用；65535 个 ID 耗尽后返�
 
 ACK 包含 `ok`、项目/模板/动作/点位身份、已提交 `event_seq,take_id`；失败带 `error` 字符串。GET_LOG_INFO tuple 是 `project_id,template_id,event_seq,take_id,lines,bytes`，bytes 包含每行 LF。GET_STATUS/主动 STATUS 的业务快照字段包括：
 
-- `project_id,template_id,action_id,point_id,event_seq,take_id,active_take_id,phase,boot_id,mono_ms,time_synced,writable,free_bytes`，以及存储诊断 `storage_error`；空间无法获取时 free_bytes 可能缺失。take_id 是最新永久编号；active_take_id 在空闲时为 0，不能仅凭 take_id 非零认为正在录制。
+- `project_id,template_id,action_id,point_id,event_seq,take_id,active_take_id,phase,boot_id,mono_ms,time_synced,writable,free_bytes,target_cameras,active_participants`，以及存储诊断 `storage_error`；空间无法获取时 free_bytes 可能缺失。take_id 是最新永久编号；active_take_id 在空闲时为 0，不能仅凭 take_id 非零认为正在录制。`target_cameras` 是持久配置意图，1=A、2=B、3=双机；`active_participants` 是活动段已准入的掩码，空闲为 0，不表示这些相机已确认录上。
 - phase 为 idle/starting/recording/stopping/closing。没有时间锚点的 boot 必须允许“时间待确认”，不能编造 UTC；仅相同 boot_id 的单调时间可以直接比较。
 - `cameras` 固定 A、B 顺序，每项含 `connected,fresh,recording,record_time,battery,led,video,sleeping,status_age_ms,ready`。状态失联/陈旧不能用 recording=false 当成已确认停录；record_time 保留原始值，不擅自推定单位。
+
+### 选机与固件能力
+
+所有控制 ACK、GET_LOG_INFO 与 STATUS 返回 `target_cameras`，STATUS 另有 `active_participants`。手机切换相机时与动作、点位一起发 SELECT_ACTION，收到设备成功确认的有效目标后才高亮；发送 START 必须附上已确认目标。对缺少有效实时目标/参与字段的旧固件，不应猜测它支持选机：禁用选机与新 START 并说明需要支持该功能的固件，保留已有活动录像的 STOP。这与历史日志缺字段的恢复规则是两回事。
+
+手机与 BOOT 都要求所选目标全部就绪；双机不足时拒绝开始，需显式切单机。未选相机未连接、休眠或陈旧本身不阻塞所选机，但任何已连接相机报告正在录像仍否决新受控拍摄。错误目标类型（包括 bool、null、字符串、小数）或 0/>3 返回 invalid_request；目标与已提交选择不符返回 target_mismatch。有效的最新 command_id 重复返回原编号，不产生第二段。拍摄期间禁止切换目标；外部录像仅改变本段参与证据，不改变配置目标。
 
 ## 快照日志与逐事件持久化
 
@@ -186,6 +192,6 @@ export async function syncCurrentProject() {
 
 通过 HTTPS 静态托管原生 ESM（正确 JavaScript MIME）并保持相对路径；不需要 ESP32 Wi-Fi、file:// 或后端业务服务。开发 localhost 的安全上下文仅指浏览器所在设备，手机访问电脑普通 HTTP IP 不等价。connect/requestDevice 必须来自用户手势，不能先做长时间异步业务再弹选择器；嵌入页面还受 Permissions Policy、权限与可见性限制。
 
-优先评估支持 Web Bluetooth 的 Android Chromium 浏览器；先检测 `navigator.bluetooth`，再检查权限、系统蓝牙与设备可见性。iOS Safari/普通 iOS PWA 不应被假设支持 Web Bluetooth，桌面/其他浏览器也存在平台、实验开关和策略差异。安装 PWA **不会补出蓝牙 API 或后台保活能力**。切后台、锁屏、系统省电可能断连；前台运行、显式恢复连接、重新读取状态后从数据库游标续传。离线缓存/Service Worker/安装清单由 UI 工程另行实现，本轮没有这些文件。
+优先评估支持 Web Bluetooth 的 Android Chromium 浏览器；先检测 `navigator.bluetooth`，再检查权限、系统蓝牙与设备可见性。iOS Safari/普通 iOS PWA 不应被假设支持 Web Bluetooth，桌面/其他浏览器也存在平台、实验开关和策略差异。安装 PWA **不会补出蓝牙 API 或后台保活能力**。切后台、锁屏、系统省电可能断连；前台运行、显式恢复连接、重新读取状态后从本地项目游标续传。离线缓存、Service Worker 和安装清单现已实现；Mac 独立 Chrome 在关闭进程、关闭本地服务器后能离线重开，但真实手机安装入口、HTTPS 和前后台 BLE 尚需单独验收。
 
 自动化入口 `node --test tests/test_phone_client.mjs` 的 26 项测试已通过，C3 固件已真实编译并刷入。Windows 原生 BLE 第三端与两机同时连接时，通过 GET_STATUS、完整/空增量日志、断开重连、733 字节命令的 20 字节分片及 USB-only 限制验证；设备原有 7 条/5737 字节主账逐字节保留，没有发 START 或修改相机素材。原始私有证据见 `backups/phone-ble-readonly-verification.json`。这不等于 Web Bluetooth 手机实测；真实手机连接、长流背压、前后台切换仍需 UI 集成后安全验收。

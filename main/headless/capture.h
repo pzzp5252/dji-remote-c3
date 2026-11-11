@@ -46,11 +46,12 @@ void capture_init(capture_t *, cap_emit_fn, cap_dispatch_fn, void *);
 bool capture_fresh(const cap_sample_t *, uint64_t now);
 /* Idle + no connected camera reporting recording + at least one ready camera. */
 uint8_t capture_ready_mask(const cap_sample_t samples[2], uint64_t now);
-/* Emits durable BEGIN before any dispatch. source=external observes recording
- * without START dispatch and may have empty action. */
+/* Emits durable BEGIN before dispatch, requiring every selected camera ready.
+ * source=external observes actual recording without START and may lack action. */
 bool capture_begin(capture_t *, const cap_sample_t[2], uint64_t now,
                    uint32_t take_id, const char *command_id, const char *action_id,
-                   const char *point_id, const char *boot_id, const char *source);
+                   const char *point_id, const char *boot_id, const char *source,
+                   uint8_t target_cameras);
 /* STOP can supersede STARTING. Repeated STOP does not reset its deadline. */
 bool capture_stop(capture_t *, const cap_sample_t[2], uint64_t now);
 /* Called with status transitions and periodically; never writes in BLE callback.

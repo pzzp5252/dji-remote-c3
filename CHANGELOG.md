@@ -7,7 +7,7 @@ All notable changes to this project are documented in this file.
 ### Added
 
 - C3 take lifecycle with independent camera evidence, durable-before-start admission,
-  cancellation during START, single-ready-camera continuation and revised LEDs.
+  cancellation during START, explicit single-camera continuation and revised LEDs.
 - LittleFS five-event JSONL journal, 8 KiB admission reserve, streaming recovery,
   latest-BEGIN command deduplication, USB JSON management and atomic project reset.
 - Separate project/template identities and per-boot UTC anchors; unanchored boots
@@ -26,10 +26,14 @@ All notable changes to this project are documented in this file.
   directories, provenance-safe collision alternatives and versioned mapping history.
 - Dependency-free three-sheet XLSX shooting/file/revision ledger, with 16 passing
   synthetic pipeline behavior tests; real camera-media acceptance remains separate.
-- Phone operator UI with plain-Chinese controls, collapsed device diagnostics and
-  one canonical page shell. Browser smoke exercised recording, record updates,
-  discard/restore, reassignment and literal imported labels; visual/PWA acceptance
-  is still in progress.
+- Phone operator UI with plain-Chinese controls, collapsed diagnostics, isolated
+  demo storage, stable editing focus/drafts and 24 DOM/ledger behavior regressions.
+- Static PWA manifest, self-contained icons and versioned offline app/template
+  cache; background network failures do not produce unhandled rejections.
+- Persistent A/B/both camera intent shared by phone, USB and BOOT, strict selected-
+  camera admission, START intent guard and separate active-take participation.
+- Three-view phone workbench for shooting, action selection and recorded takes;
+  single-camera history distinguishes non-participation from failed recording.
 
 ### Changed
 
@@ -46,6 +50,20 @@ All notable changes to this project are documented in this file.
 
 - Preserve the last observed recording timer in TAKE_END instead of overwriting
   it with the camera's post-stop idle zero; found during the real dual-camera test.
+- Phone START cancellation now waits for the admitted take identity before one
+  STOP; pending requests cannot duplicate START or overwrite fresher camera state.
+  STOP acknowledgment alone no longer invents idle confirmation. Empty-project
+  transitions clear visible old records/drafts without deleting their backups.
+- A stale cached recording status remains a safety veto, but no longer appears as
+  fresh recording confirmation on the phone.
+- Explicit STOP now covers newly recording peers during shutdown without
+  extending its deadline, and journal-unavailable safety STOP leaves idle peers
+  alone. A matching STOP after an ended timeout can still stop a recording camera
+  without rewriting closed evidence.
+- Tablet shortcuts reach their target panels, project initialization preserves
+  unsupported firmware capability, and demo identity remains visible across views.
+- Mac host-test portability: Darwin extension declarations and canonical owned
+  temporary fixture roots, with production output-symlink protection unchanged.
 
 ### Verified
 
@@ -65,7 +83,24 @@ All notable changes to this project are documented in this file.
   USB-only restrictions, reconnect and incremental resume. The current 7-event,
   5737-byte ledger matches pre-update backup and post-update USB export exactly.
   No recording or camera-media commands were sent in this phone integration stage.
-  Actual phone/browser UI, background lifecycle and HTTPS/PWA remain unverified.
+  This did not validate actual phone Web Bluetooth or background lifecycle.
+- Mac complete host suite passed with Apple Clang 21/ASan/UBSan, cJSON 1.7.19,
+  Python 3.14.2 and Node 24.12.0, including 15 MP4, 26 BLE-client, 24 phone-UI and
+  16 archive behavior tests, legacy status tests and all 9 handshake scenarios.
+- Browser smoke covered operator interactions, pending START cancellation,
+  record revisions, collapsed error details, 48px targets, themes and responsive
+  layouts. After a full isolated Chrome process restart with its HTTP server
+  stopped, cached navigation, reload, template loading and demo connection worked
+  offline with no page errors/unhandled rejections. Missing precache assets
+  rejected installation without activating an incomplete shell.
+  Actual mobile HTTPS/install/BLE, real camera-media matching and prolonged field
+  use remain unverified. This Mac stage did not touch firmware or real devices.
+- New camera-selection source changes passed Clang/ASan/UBSan integration
+  coverage for strict admission, durable intent and isolated dispatch. Corrected
+  phone layouts passed browser checks at 375x667, 375x812, 768x900 and 1440x900;
+  v4 cached navigation/demo interaction worked after full Chrome restart with
+  the HTTP server stopped. The new protocol has not been deployed or exercised
+  on the ESP32/cameras; no device, pairing or original-media data was changed.
 
 ## [v1.2.0]
 

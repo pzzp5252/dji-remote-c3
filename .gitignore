@@ -13,3 +13,4 @@ sdkconfig.old
 /backups/
 __pycache__/
 *.pyc
+/node_modules/

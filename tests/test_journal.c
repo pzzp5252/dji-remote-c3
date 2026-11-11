@@ -142,6 +142,7 @@ static void rejected(cJSON *obj) {
     assert(journal_state()->bytes == before.bytes && journal_state()->lines == before.lines);
     assert(journal_state()->take_id == before.take_id && journal_state()->event_seq == before.event_seq);
     assert(journal_state()->unfinished == before.unfinished);
+    assert(journal_state()->target_cameras == before.target_cameras);
     assert(stat(name, &disk) == 0 && (size_t)disk.st_size == before.bytes);
     cJSON_Delete(obj);
 }
@@ -149,6 +150,33 @@ static void setup_selected(void) {
     fixture_open();
     assert(journal_init_project("project-1", "template-1"));
     append_ok(selection("action_1", "point.1"));
+}
+
+static void test_target_selection_replay_and_validation(void) {
+    setup_selected(); /* Existing rows have no target field. */
+    assert(journal_state()->target_cameras == 3);
+    assert(journal_open(fixture) && journal_state()->target_cameras == 3);
+    cJSON *selected = selection("action_1", "point.1");
+    assert(cJSON_AddNumberToObject(selected, "target_cameras", 2));
+    append_ok(selected);
+    assert(journal_open(fixture) && journal_state()->target_cameras == 2);
+    append_ok(selection("action_2", "")); /* Omission retains intent. */
+    assert(journal_open(fixture) && journal_state()->target_cameras == 2);
+    cJSON *invalid[] = {
+        cJSON_CreateNumber(0), cJSON_CreateNumber(4), cJSON_CreateNumber(1.5),
+        cJSON_CreateBool(true), cJSON_CreateNull(), cJSON_CreateString("1"),
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        selected = selection("action_3", "");
+        assert(cJSON_AddItemToObject(selected, "target_cameras", invalid[i]));
+        rejected(selected);
+        assert(!strcmp(journal_state()->action_id, "action_2"));
+    }
+    const journal_state_t *state = journal_state();
+    assert(journal_reset(state->project_id, state->event_seq, state->take_id,
+                         state->lines, state->bytes));
+    assert(journal_state()->target_cameras == 3);
+    fixture_remove();
 }
 
 static void test_durable_replay_and_export(void) {
@@ -357,6 +385,10 @@ static void test_append_failure_rolls_back(void) {
     assert(signal(SIGXFSZ, SIG_IGN) != SIG_ERR);
     assert(setrlimit(RLIMIT_FSIZE, &limited) == 0);
     rejected(begin(1, "partial-write"));
+    cJSON *selected = selection("action_2", "");
+    assert(cJSON_AddNumberToObject(selected, "target_cameras", 1));
+    rejected(selected);
+    assert(journal_state()->target_cameras == 3);
     assert(setrlimit(RLIMIT_FSIZE, &previous) == 0);
     assert(journal_state()->writable);
     assert(journal_open(fixture));
@@ -465,6 +497,7 @@ int main(void) {
     assert(journal_id_valid("", JOURNAL_ACTION_MAX, true));
     assert(!journal_id_valid("nonascii-\xc3\xa9", JOURNAL_ID_MAX, false));
     test_durable_replay_and_export();
+    test_target_selection_replay_and_validation();
     test_tail_and_corrupt_interior();
     test_ordering_and_bounds();
     test_replay_validation();

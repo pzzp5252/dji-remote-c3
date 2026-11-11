@@ -44,6 +44,7 @@ static void ack(bool ok,const char *error,const control_request_t *request) {
         cJSON_AddStringToObject(o,"action_id",journal_state()->action_id);
         cJSON_AddStringToObject(o,"point_id",journal_state()->point_id);
         cJSON_AddNumberToObject(o,"event_seq",journal_state()->event_seq);
+        cJSON_AddNumberToObject(o,"target_cameras",journal_state()->target_cameras);
         if(error)cJSON_AddStringToObject(o,"error",error);
     }
     reply(o,request);
@@ -129,7 +130,7 @@ static bool begin(const cap_sample_t s[2],const char *id,const char *source) {
     bool external=!strcmp(source,"external");
     if(!external && !j->action_id[0])return false;
     return capture_begin(&take,s,event_now,j->take_id+1,id,external?"":j->action_id,
-                         external?"":j->point_id,boot,source);
+                         external?"":j->point_id,boot,source,j->target_cameras);
 }
 void control_service_init(const char *boot_id,cap_dispatch_fn send,void *ctx,
                           uint64_t (*clock_ms)(void)) {
@@ -182,7 +183,7 @@ void control_service_button(const cap_sample_t s[2],uint64_t now) {
     char id[CAP_ID_MAX];command_id(id);
     if(recording) {
         if(begin(s,id,"external"))(void)capture_stop(&take,s,now);
-        else for(int i=0;i<2;i++)if(s[i].connected)(void)dispatch(NULL,i,false);
+        else for(int i=0;i<2;i++)if(s[i].connected && s[i].recording)(void)dispatch(NULL,i,false);
     } else if(!begin(s,id,"boot"))ack(false,"start_rejected_or_storage_full",NULL);
 }
 bool control_service_active(void) { return capture_active(&take); }
@@ -196,6 +197,7 @@ static cJSON *info(void) {
     cJSON_AddStringToObject(o,"project_id",j->project_id);cJSON_AddStringToObject(o,"template_id",j->template_id);
     cJSON_AddStringToObject(o,"action_id",j->action_id);cJSON_AddStringToObject(o,"point_id",j->point_id);
     cJSON_AddNumberToObject(o,"event_seq",j->event_seq);cJSON_AddNumberToObject(o,"take_id",j->take_id);
+    cJSON_AddNumberToObject(o,"target_cameras",j->target_cameras);
     cJSON_AddNumberToObject(o,"lines",j->lines);cJSON_AddNumberToObject(o,"bytes",(double)j->bytes);
     cJSON_AddBoolToObject(o,"writable",j->writable);return o;
 }
@@ -206,6 +208,7 @@ cJSON *control_service_status(const cap_sample_t s[2],uint64_t now) {
     cJSON_AddStringToObject(o,"boot_id",boot);
     cJSON_AddNumberToObject(o,"mono_ms",(double)now);
     cJSON_AddNumberToObject(o,"active_take_id",capture_active(&take)?take.take_id:0);
+    cJSON_AddNumberToObject(o,"active_participants",capture_active(&take)?take.participants:0);
     cJSON_AddBoolToObject(o,"time_synced",anchor_valid);
     cJSON_AddStringToObject(o,"storage_error",journal_error());
     size_t total=0,used=0;
@@ -266,15 +269,29 @@ void control_service_command(const cJSON *r,const cap_sample_t s[2],uint64_t now
         if(!journal_id_valid(id,CAP_ID_MAX,false))goto done;
         const char *project=text(r,"project_id");
         if(!project || strcmp(project,j->project_id)) { error="project_mismatch";goto done; }
+        uint64_t expected_target=0;
+        const cJSON *expected=cJSON_GetObjectItemCaseSensitive(r,"target_cameras");
+        if(expected && (!number(r,"target_cameras",3,&expected_target) || expected_target<1))
+            goto done;
         /* O(1): only the latest committed BEGIN is compared, including replay. */
         if(j->take_id && !strcmp(id,j->last_command_id)) { ok=true;goto done; }
+        if(expected && expected_target!=j->target_cameras) { error="target_mismatch";goto done; }
         ok=begin(s,id,request->transport==CONTROL_BLE?"ble":"usb");error=ok?NULL:"start_rejected_or_storage_full";
     } else if(!strcmp(cmd,"STOP")) {
         uint64_t id;const char *project=text(r,"project_id");
         if(!project || strcmp(project,j->project_id) || !number(r,"take_id",UINT32_MAX,&id) || id!=j->take_id) {
             error="take_identity_mismatch";goto done;
         }
-        ok=capture_active(&take)?capture_stop(&take,s,now):!j->unfinished;
+        if(capture_active(&take))ok=capture_stop(&take,s,now);
+        else if(!j->unfinished) {
+            /* A closed timeout or failed external BEGIN can leave a camera
+             * recording. Preserve closed evidence while honoring explicit STOP. */
+            ok=true;
+            for(int i=0;i<2;i++)if(s[i].connected && s[i].recording) {
+                bool sent=dispatch(NULL,i,false);
+                ok=sent && ok;
+            }
+        }
         error=ok?NULL:"stop_rejected";
     } else if(!strcmp(cmd,"SELECT_ACTION") || !strcmp(cmd,"MARK_DISCARD") || !strcmp(cmd,"REASSIGN")) {
         if(capture_active(&take) || j->unfinished) { error="take_active";goto done; }
@@ -295,6 +312,12 @@ void control_service_command(const cJSON *r,const cap_sample_t s[2],uint64_t now
             if(!point)point="";
             valid=valid && journal_id_valid(action,CAP_ACTION_MAX,false) && journal_id_valid(point,CAP_ACTION_MAX,true);
             if(valid)valid=cJSON_AddStringToObject(o,"action_id",action) && cJSON_AddStringToObject(o,"point_id",point);
+            if(!strcmp(cmd,"SELECT_ACTION")) {
+                uint64_t target=j->target_cameras;
+                if(cJSON_GetObjectItemCaseSensitive(r,"target_cameras"))
+                    valid=valid && number(r,"target_cameras",3,&target) && target>=1;
+                if(valid)valid=cJSON_AddNumberToObject(o,"target_cameras",(double)target)!=NULL;
+            }
         }
         if(valid)ok=append(o);else cJSON_Delete(o);
         error=ok?NULL:(valid?journal_error():"invalid_request");

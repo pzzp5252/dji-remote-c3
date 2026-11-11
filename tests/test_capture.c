@@ -76,7 +76,7 @@ static void status(cap_sample_t *s, uint64_t timestamp, bool recording, uint16_t
 }
 
 static bool begin(fixture_t *f, cap_sample_t s[2], uint64_t now, uint32_t take_id) {
-    return capture_begin(&f->cap, s, now, take_id, "cmd-1", "walk", "point.1", "boot_1", "usb");
+    return capture_begin(&f->cap, s, now, take_id, "cmd-1", "walk", "point.1", "boot_1", "usb", 3);
 }
 
 static void test_durable_begin(void) {
@@ -111,7 +111,9 @@ static void test_single_ready_and_veto(void) {
         default: s[1].status_ms = 1; break;
         }
         assert(capture_ready_mask(s, 5000) == 1);
-        assert(begin(&f, s, 5000, 1));
+        assert(!begin(&f, s, 5000, 1));
+        assert(!f.begins && !f.starts[0] && !f.starts[1]);
+        assert(capture_begin(&f.cap, s, 5000, 1, "cmd-1", "walk", "point.1", "boot_1", "usb", 1));
         assert(f.cap.participants == 1);
         assert(f.starts[0] == 1 && !f.starts[1]);
         assert(f.cap.cameras[0].participating && !f.cap.cameras[1].participating);
@@ -213,7 +215,7 @@ static void test_unconfirmed_start_closes_explicitly(void) {
     fixture_t f;
     setup(&f);
     cap_sample_t s[2] = {ready(100), {0}};
-    assert(begin(&f, s, 100, 1));
+    assert(capture_begin(&f.cap, s, 100, 1, "cmd-1", "walk", "point.1", "boot_1", "usb", 1));
     s[0] = ready(6100);
     capture_observe(&f.cap, s, 6100);
     assert(f.cap.phase == CAP_STOPPING && f.stops[0] == 1 && !f.ends);
@@ -227,7 +229,7 @@ static void test_unconfirmed_start_closes_explicitly(void) {
 
     setup(&f);
     s[0] = ready(100);
-    assert(begin(&f, s, 100, 1));
+    assert(capture_begin(&f.cap, s, 100, 1, "cmd-1", "walk", "point.1", "boot_1", "usb", 1));
     capture_observe(&f.cap, s, 6100);
     assert(f.cap.phase == CAP_STOPPING);
     capture_observe(&f.cap, s, 12100);
@@ -256,7 +258,8 @@ static void test_stop_timeout_and_single_camera_continuation(void) {
     assert(!strcmp(f.end.reason, "stop_timeout"));
     assert(f.end.cameras[1].unknown && !f.end.cameras[1].stop_confirmed);
     assert(f.end.cameras[1].seen_recording && f.end.observation_lost);
-    assert(begin(&f, s, 6121, 2));
+    assert(!begin(&f, s, 6121, 2)); /* Changing to single-camera is explicit. */
+    assert(capture_begin(&f.cap, s, 6121, 2, "cmd-2", "walk", "point.1", "boot_1", "usb", 1));
     assert(f.cap.participants == 1 && f.starts[0] == 2 && f.starts[1] == 1);
     assert(f.cap.ctx == &f && f.cap.emit == emit && f.cap.dispatch == dispatch);
     assert(!f.cap.cameras[0].seen_recording && !f.cap.cameras[0].start_failed);
@@ -266,7 +269,7 @@ static void test_unknown_fresh_idle_recovery(void) {
     fixture_t f;
     setup(&f);
     cap_sample_t s[2] = {ready(100), {0}};
-    assert(begin(&f, s, 100, 1));
+    assert(capture_begin(&f.cap, s, 100, 1, "cmd-1", "walk", "point.1", "boot_1", "usb", 1));
     status(&s[0], 101, true, 8);
     capture_observe(&f.cap, s, 102);
     s[0].connected = false;
@@ -288,7 +291,7 @@ static void test_unknown_fresh_idle_recovery(void) {
     assert(!f.cap.cameras[0].unknown && !f.cap.cameras[0].final_recording);
     assert(f.cap.cameras[1].unknown);
     assert(capture_led(&f.cap, 0, &s[0], 6122) == 1);
-    assert(begin(&f, s, 6122, 2));
+    assert(capture_begin(&f.cap, s, 6122, 2, "cmd-2", "walk", "point.1", "boot_1", "usb", 1));
 }
 
 static void test_external_recording(void) {
@@ -296,7 +299,7 @@ static void test_external_recording(void) {
     setup(&f);
     cap_sample_t s[2] = {ready(90), ready(90)};
     status(&s[0], 95, true, 42);
-    assert(capture_begin(&f.cap, s, 100, 1, "external.1", "", "", "boot_1", "external"));
+    assert(capture_begin(&f.cap, s, 100, 1, "external.1", "", "", "boot_1", "external", 3));
     assert(f.cap.phase == CAP_RECORDING && f.cap.participants == 1);
     assert(!f.starts[0] && !f.starts[1] && !f.cap.action_id[0]);
     assert(f.cap.cameras[0].seen_recording && f.cap.cameras[0].first_record_ms == 95);
@@ -307,8 +310,8 @@ static void test_external_recording(void) {
     assert(f.cap.phase == CAP_IDLE && f.ends == 1 && !f.stops[0]);
     assert(f.end.cameras[0].stop_confirmed && f.end.cameras[0].stopped_ms == 110);
     assert(f.end.cameras[0].unexpected_stop);
-    assert(!capture_begin(&f.cap, s, 121, 2, "external.2", "", "", "boot_1", "external"));
-    assert(!capture_begin(&f.cap, s, 121, 2, "cmd", "", "", "boot_1", "usb"));
+    assert(!capture_begin(&f.cap, s, 121, 2, "external.2", "", "", "boot_1", "external", 3));
+    assert(!capture_begin(&f.cap, s, 121, 2, "cmd", "", "", "boot_1", "usb", 3));
 }
 
 static void test_unexpected_stop_restart_and_autonomous_end(void) {
@@ -338,7 +341,7 @@ static void test_unexpected_stop_restart_and_autonomous_end(void) {
     s[0] = ready(100);
     s[1] = ready(100);
     s[1].video = false;
-    assert(begin(&f, s, 100, 1));
+    assert(capture_begin(&f.cap, s, 100, 1, "cmd-1", "walk", "point.1", "boot_1", "usb", 1));
     status(&s[0], 101, true, 1);
     status(&s[1], 102, true, 1);
     capture_observe(&f.cap, s, 102);
@@ -356,7 +359,7 @@ static void test_end_append_retry(void) {
     fixture_t f;
     setup(&f);
     cap_sample_t s[2] = {ready(100), {0}};
-    assert(begin(&f, s, 100, 1));
+    assert(capture_begin(&f.cap, s, 100, 1, "cmd-1", "walk", "point.1", "boot_1", "usb", 1));
     status(&s[0], 101, true, 1);
     capture_observe(&f.cap, s, 101);
     assert(capture_stop(&f.cap, s, 110));
@@ -385,7 +388,7 @@ static void test_end_append_retry(void) {
     status(&s[1], 116, false, 1);
     capture_observe(&f.cap, s, 116);
     assert(f.end_attempts == 3 && f.ends == 1);
-    assert(begin(&f, s, 116, 2));
+    assert(capture_begin(&f.cap, s, 116, 2, "cmd-2", "walk", "point.1", "boot_1", "usb", 1));
 }
 
 static void test_stop_deadline_and_leds(void) {
@@ -394,7 +397,7 @@ static void test_stop_deadline_and_leds(void) {
     cap_sample_t s[2] = {ready(100), {0}};
     assert(capture_led(&f.cap, 0, &s[0], 100) == 1);
     assert(capture_led(&f.cap, 1, &s[1], 100) == 0);
-    assert(begin(&f, s, 100, 1));
+    assert(capture_begin(&f.cap, s, 100, 1, "cmd-1", "walk", "point.1", "boot_1", "usb", 1));
     assert(capture_led(&f.cap, 0, &s[0], 100) == 3);
     status(&s[0], 101, true, 1);
     capture_observe(&f.cap, s, 101);
@@ -415,7 +418,7 @@ static void test_stop_deadline_and_leds(void) {
 static void test_status_between_stop_request_and_dispatch(void) {
     fixture_t f;setup(&f);
     cap_sample_t s[2]={ready(100),{0}};
-    assert(begin(&f,s,100,1));
+    assert(capture_begin(&f.cap,s,100,1,"cmd-1","walk","point.1","boot_1","usb",1));
     assert(capture_stop(&f.cap,s,110));
     /* Application dispatcher stamps actual call time after any queue/fsync delay. */
     f.cap.cameras[0].stop_ms=150;
@@ -425,6 +428,26 @@ static void test_status_between_stop_request_and_dispatch(void) {
     status(&s[0],152,false,0);
     capture_observe(&f.cap,s,152);
     assert(f.cap.phase==CAP_IDLE && f.end.cameras[0].stopped_ms==152);
+}
+
+static void test_explicit_stop_covers_late_recording_peer(void) {
+    fixture_t f;setup(&f);
+    cap_sample_t s[2]={ready(100),ready(100)};
+    assert(capture_begin(&f.cap,s,100,1,"cmd-1","walk","point.1","boot_1","usb",1));
+    status(&s[0],101,true,1);
+    capture_observe(&f.cap,s,101);
+    assert(capture_stop(&f.cap,s,110));
+    assert(f.stops[0]==1 && f.stops[1]==0);
+    status(&s[1],120,true,1);
+    assert(capture_stop(&f.cap,s,120));
+    assert(f.stops[0]==1 && f.stops[1]==1);
+    assert(f.cap.stop_requested_ms==110 && f.cap.participants==1);
+    assert(f.cap.cameras[1].seen_recording && !f.cap.cameras[1].participating);
+    assert(capture_stop(&f.cap,s,121));
+    assert(f.stops[0]==1 && f.stops[1]==1);
+    status(&s[0],122,false,0);status(&s[1],122,false,0);
+    capture_observe(&f.cap,s,122);
+    assert(f.cap.phase==CAP_IDLE && f.end.cameras[1].stop_sent);
 }
 
 int main(void) {
@@ -441,6 +464,7 @@ int main(void) {
     test_end_append_retry();
     test_stop_deadline_and_leds();
     test_status_between_stop_request_and_dispatch();
+    test_explicit_stop_covers_late_recording_peer();
     puts("capture: all behavior tests passed");
     return 0;
 }

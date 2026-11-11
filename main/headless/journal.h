@@ -15,6 +15,7 @@ typedef struct {
     char action_id[JOURNAL_ACTION_MAX], point_id[JOURNAL_ACTION_MAX];
     char last_command_id[JOURNAL_ID_MAX];
     uint32_t take_id, event_seq, lines;
+    uint8_t target_cameras; /* Persistent operator intent; not take participation. */
     size_t bytes;
     bool unfinished, writable;
     /* Latest TAKE_BEGIN, retained during replay; caller never frees it. */

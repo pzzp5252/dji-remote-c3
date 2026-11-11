@@ -108,7 +108,8 @@ static void observe_samples(capture_t *c, const cap_sample_t samples[2], uint64_
 
 bool capture_begin(capture_t *c, const cap_sample_t samples[2], uint64_t now,
                    uint32_t take_id, const char *command_id, const char *action_id,
-                   const char *point_id, const char *boot_id, const char *source) {
+                   const char *point_id, const char *boot_id, const char *source,
+                   uint8_t target_cameras) {
     if (!c || c->phase != CAP_IDLE || !take_id || !source || !c->emit) return false;
     bool external = strcmp(source, "external") == 0;
     if ((!external && strcmp(source, "boot") && strcmp(source, "usb") && strcmp(source, "ble")) ||
@@ -122,7 +123,10 @@ bool capture_begin(capture_t *c, const cap_sample_t samples[2], uint64_t now,
             if (samples[i].connected && samples[i].valid && samples[i].recording &&
                 samples[i].status_ms <= now) mask |= (uint8_t)(1u << i);
     } else {
-        mask = capture_ready_mask(samples, now);
+        if (target_cameras < 1 || target_cameras > 3 ||
+            (capture_ready_mask(samples, now) & target_cameras) != target_cameras)
+            return false;
+        mask = target_cameras;
     }
     if (!mask) return false;
 
@@ -171,10 +175,11 @@ bool capture_begin(capture_t *c, const cap_sample_t samples[2], uint64_t now,
 }
 
 static void request_stop(capture_t *c, const cap_sample_t samples[2], uint64_t now) {
+    if (c->phase != CAP_STOPPING) c->stop_requested_ms = now;
     c->phase = CAP_STOPPING;
-    c->stop_requested_ms = now;
     for (int i = 0; i < 2; ++i) {
         cap_evidence_t *e = &c->cameras[i];
+        if (e->stop_sent || (!involved(e) && !samples[i].recording)) continue;
         /* STOP is a safety command, not gated by normal-video/readiness status. */
         if (samples[i].connected) {
             e->stop_ms = now;
@@ -194,10 +199,11 @@ bool capture_stop(capture_t *c, const cap_sample_t samples[2], uint64_t now) {
         /* Storage failure must not prevent a physical safety STOP. Keep the
          * pending END byte-for-byte unchanged for its next append attempt. */
         for (int i = 0; i < 2; ++i)
-            if (samples[i].connected && c->dispatch) c->dispatch(c->ctx, i, false);
+            if (samples[i].connected && c->dispatch &&
+                (involved(&c->cameras[i]) || samples[i].recording))
+                c->dispatch(c->ctx, i, false);
         return true;
     }
-    if (c->phase == CAP_STOPPING) return true;
     observe_samples(c, samples, now);
     if (!c->reason[0]) set_reason(c, c->phase == CAP_STARTING ? "cancelled" : "stopped");
     request_stop(c, samples, now);

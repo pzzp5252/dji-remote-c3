@@ -13,7 +13,7 @@ ESP32 Flash 是现场唯一主账。版本 `schema_version=1`，UTF-8 JSONL，�
 
 | type | 额外字段 | 约束 |
 |---|---|---|
-| SELECT_ACTION | action_id, point_id | 提交后才 ACK；拍摄中拒绝切换 |
+| SELECT_ACTION | action_id, point_id, target_cameras | 提交后才 ACK；拍摄中拒绝切换动作、点位或目标相机 |
 | TAKE_BEGIN | take_id, command_id, action_id, point_id, source, participants | source 为 boot/usb/ble/external；participants 为 A/B 位掩码；持久提交成功才发 START |
 | TAKE_END | take_id, action_id, point_id, begin_boot_id, begin_mono_ms, reason, complete, cameras | 结案不等于两机停止；逐机证据决定正常/异常 |
 | MARK_DISCARD | take_id, discard | 布尔值；true 标废，false 取消标废 |
@@ -25,7 +25,7 @@ ESP32 Flash 是现场唯一主账。版本 `schema_version=1`，UTF-8 JSONL，�
 
 | 字段 | 类型/含义 |
 |---|---|
-| participating | bool，是否参与本次开始；false 表示未参与/未就绪，不会自动补发 START |
+| participating | bool，是否准入本段开始；false 表示未参与，不会自动补发 START；启动失败仍保留 true 及 start_failed 证据 |
 | start_sent / start_failed / stop_sent / stop_failed | bool，仅代表派发结果，不代表相机执行成功 |
 | start_ms / stop_ms | 单调毫秒或 null，实际调用逐机异步接口前的时间 |
 | seen_recording / first_record_ms / last_record_ms | 是否观察到录像及首次/最后 1D02 观察时间 |
@@ -43,7 +43,9 @@ END 的 `observation_lost` 表示过程证据不完整；`complete` 仅在参与
 
 只在 RAM 保存最新 TAKE_BEGIN 的 command_id 与 take_id；开机扫描恢复时同时恢复该值。START 防重仅比较这一条，不为请求扫描历史日志；相同命令返回原编号。旧命令跨过更新的 BEGIN 后不保证防重，客户端不得无限期重放。
 
-新 BEGIN 必须满足：旧段已结案、没有已连接相机被观察为录像中、至少一台相机状态新鲜且确认空闲并可录像。仅对就绪相机发 START，另一台记录未参与/未就绪。等待 START 时 STOP 可立即打断；不会为此分配新编号。停止超时写异常 END，断连相机不会永久阻塞下一段；已连接相机收到新鲜空闲 1D02 后可清除未知。迟到或外部录像一旦被观察到，禁止作为空闲开启新段。
+受控新 BEGIN 必须满足：旧段已结案、没有已连接相机报告录像中、所选目标相机全部状态新鲜且确认空闲并可录像。`target_cameras` 为控制器持久保存的配置意图，1=仅 A、2=仅 B、3=双机；手机与 BOOT 严格执行相同规则，双机缺一台时拒绝开始，不静默降级。仅对所选槽派发 START，未选且未录像的相机即使离线也不阻塞；STOP 只发给参与/已观察到录像或当前报告录像的相机。等待 START 时 STOP 可打断，不分配新编号。停止超时写异常 END；参与相机的失联不改变当前已选目标，也不自动续拍。
+
+新提交的 SELECT_ACTION 行保存有效的 `target_cameras`。存量历史行缺少此字段时保留此前目标，扫描初始目标为 3；不重写旧行。`TAKE_BEGIN.participants` 只表示本段准入的参与集合，外部手动录像按实际观察生成参与掩码，不污染选机配置；是否真正录上仍看各机 `seen_recording` 等证据。新空项目/正式 RESET 后目标恢复为 3，普通重启从日志恢复最近已提交选择。
 
 BEGIN 前检查 LittleFS 可用空间，除 BEGIN 自身外保留 8192 字节余量。空间不足拒绝新拍摄，不禁止停止、END 和导出。状态推送仅更新 RAM；无周期 Flash 检查点。
 

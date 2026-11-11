@@ -123,6 +123,11 @@ static bool transition(const cJSON *event, journal_state_t *next) {
         if (state.unfinished || !id_field(event, "action_id", JOURNAL_ACTION_MAX, false) ||
             !id_field(event, "point_id", JOURNAL_ACTION_MAX, true))
             return fail("invalid SELECT_ACTION or take still open");
+        if (cJSON_GetObjectItemCaseSensitive(event, "target_cameras")) {
+            if (!number_field(event, "target_cameras", 3, &value) || value < 1)
+                return fail("invalid target_cameras");
+            next->target_cameras = (uint8_t)value;
+        }
         strcpy(next->action_id, string_field(event, "action_id"));
         strcpy(next->point_id, string_field(event, "point_id"));
         return true;
@@ -216,6 +221,7 @@ static bool switch_generation(unsigned slot, const char *project, const char *te
     /* The rename is the commit point: publish its already prepared state. */
     cJSON_Delete(state.last_begin);
     memset(&state, 0, sizeof(state));
+    state.target_cameras = 3;
     strcpy(state.project_id, project_copy);
     strcpy(state.template_id, template_copy);
     generation = slot;
@@ -309,6 +315,7 @@ bool journal_open(const char *root) {
     opened = false;
     cJSON_Delete(state.last_begin);
     memset(&state, 0, sizeof(state));
+    state.target_cameras = 3;
     error_text[0] = '\0';
     if (!root || !*root || strlen(root) >= sizeof(root_path) - 32)
         return fail("invalid journal root");

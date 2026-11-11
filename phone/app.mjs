@@ -72,6 +72,72 @@ export function isValidAsciiId(value, maxBytes = 63) {
   return /^[A-Za-z0-9_.-]+$/.test(value);
 }
 
+export function isValidTargetCameras(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 3;
+}
+
+export function isValidActiveParticipants(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 3;
+}
+
+export const TARGET_CAMERA_LABELS = Object.freeze({
+  1: '只拍 A 机',
+  2: '只拍 B 机',
+  3: '双机同拍',
+});
+
+export function describeTargetCameras(mask) {
+  return TARGET_CAMERA_LABELS[mask] ?? '未指定相机';
+}
+
+export function computeCameraAdmission(cameras = [], targetCameras = 3) {
+  const list = Array.isArray(cameras) ? cameras : [];
+  const anyConnectedRecording = list.some(c => Boolean(c?.connected && c?.recording === true));
+  let readyMask = 0;
+  for (let i = 0; i < 2; i++) {
+    const cam = list[i];
+    if (cam?.connected && cam?.fresh !== false && cam?.video !== false &&
+        !cam?.sleeping && !cam?.recording && cam?.ready === true) {
+      readyMask |= (i === 0 ? 1 : 2);
+    }
+  }
+  const targetValid = isValidTargetCameras(targetCameras);
+  const selectedStale = targetValid && [0, 1].some(i => {
+    const bit = i === 0 ? 1 : 2;
+    const cam = list[i];
+    return Boolean((targetCameras & bit) && cam?.connected && cam?.fresh === false);
+  });
+  const targetReady = targetValid && !anyConnectedRecording && ((readyMask & targetCameras) === targetCameras);
+  return {
+    readyMask,
+    anyConnectedRecording,
+    selectedStale,
+    targetReady,
+  };
+}
+
+export function formatTakeCameraSummary(cam, camLetter, takeParticipants = 0, slotIndex = 0) {
+  const slotBit = slotIndex === 0 ? 1 : 2;
+  const bitParticipated = isValidTargetCameras(takeParticipants)
+    ? Boolean(takeParticipants & slotBit)
+    : true;
+  if (!cam) {
+    if (isValidTargetCameras(takeParticipants) && !bitParticipated) {
+      return `相机${camLetter}：本段未参与`;
+    }
+    return `相机${camLetter}：等待拍摄结果`;
+  }
+  const participated = cam.participating !== undefined ? Boolean(cam.participating) : bitParticipated;
+  const hadActivity = Boolean(
+    cam.seen_recording || cam.start_sent || cam.start_failed ||
+    cam.stop_sent || cam.stop_failed || cam.final_recording
+  );
+  if (!participated && !hadActivity) {
+    return `相机${camLetter}：本段未参与`;
+  }
+  return `相机${camLetter}：${cam.seen_recording ? '已观察到录像' : '未确认开始录像'}，${cam.stop_confirmed ? '已停止' : '未确认停止'}`;
+}
+
 // === Local Ledger Storage & Folding (Strict schema/phone-ble.md Contract) ===
 
 export const ledgerPrefix = projectId => `dji-ledger:${encodeURIComponent(projectId)}:`;
@@ -156,7 +222,7 @@ export function foldEventsToTakes(events = []) {
         point_id: existing?.reassigned ? existing.point_id : (evt.point_id ?? ''),
         command_id: evt.command_id || existing?.command_id || '',
         source: evt.source || existing?.source || '',
-        participants: evt.participants ?? existing?.participants ?? 0,
+        participants: isValidActiveParticipants(evt.participants) ? evt.participants : (existing?.participants ?? 0),
         boot_id: evt.boot_id || existing?.boot_id || '',
         begin_mono_ms: evt.mono_ms ?? existing?.begin_mono_ms ?? null,
         end_mono_ms: existing?.end_mono_ms ?? null,
@@ -202,6 +268,10 @@ export function foldEventsToTakes(events = []) {
       if (!existing.action_id && evt.action_id) existing.action_id = evt.action_id;
       if (!existing.point_id && evt.point_id) existing.point_id = evt.point_id;
       existing.cameras = Array.isArray(evt.cameras) ? evt.cameras.map(cam => ({ ...cam })) : [];
+      if (!isValidTargetCameras(existing.participants) && existing.cameras.length >= 2) {
+        const inferred = (existing.cameras[0]?.participating ? 1 : 0) | (existing.cameras[1]?.participating ? 2 : 0);
+        if (isValidTargetCameras(inferred)) existing.participants = inferred;
+      }
       takesById.set(takeId, existing);
     } else if (evt.type === 'MARK_DISCARD') {
       const existing = takesById.get(takeId);
@@ -343,6 +413,7 @@ export function createMockBleClient({
   templateId = 'CLEANROOM_SMOKE_V1',
   actionId = 'S01',
   pointId = '',
+  targetCameras = 3,
   ackDelayMs = 20,
   autoConfirmRecordingMs = 30,
   initialEvents = [],
@@ -356,6 +427,8 @@ export function createMockBleClient({
     template_id: templateId,
     action_id: actionId,
     point_id: pointId,
+    target_cameras: isValidTargetCameras(targetCameras) ? targetCameras : 3,
+    active_participants: 0,
     phase: 'idle',
     take_id: 0,
     active_take_id: 0,
@@ -365,6 +438,7 @@ export function createMockBleClient({
     free_bytes: 1982464,
     last_command_id: '',
     last_command_take_id: 0,
+    activeTakeCameras: null,
     cameras: [
       {
         connected: true,
@@ -416,6 +490,9 @@ export function createMockBleClient({
   for (const seed of initialEvents) {
     state.events.push({ ...seed, event_seq: state.events.length + 1 });
     if (seed.take_id && seed.take_id > state.take_id) state.take_id = seed.take_id;
+    if (seed.type === 'SELECT_ACTION' && isValidTargetCameras(seed.target_cameras)) {
+      state.target_cameras = seed.target_cameras;
+    }
   }
 
   function snapshotStatus() {
@@ -426,6 +503,7 @@ export function createMockBleClient({
       template_id: state.template_id,
       action_id: state.action_id,
       point_id: state.point_id,
+      target_cameras: state.target_cameras,
       event_seq: state.events.length,
       take_id: state.take_id,
       lines: state.events.length,
@@ -435,6 +513,7 @@ export function createMockBleClient({
       boot_id: state.boot_id,
       mono_ms: state.mono_ms,
       active_take_id: state.active_take_id,
+      active_participants: state.active_participants,
       time_synced: state.time_synced,
       storage_error: state.storage_error,
       free_bytes: state.free_bytes,
@@ -466,8 +545,22 @@ export function createMockBleClient({
     confirmRecording() {
       if (!state.connected || state.phase === 'idle') return;
       state.phase = 'recording';
-      state.cameras[0] = { ...state.cameras[0], recording: true, led: 2, record_time: 1 };
-      state.cameras[1] = { ...state.cameras[1], recording: true, led: 2, record_time: 1 };
+      const mask = isValidTargetCameras(state.active_participants)
+        ? state.active_participants
+        : (isValidTargetCameras(state.target_cameras) ? state.target_cameras : 3);
+      for (let i = 0; i < 2; i++) {
+        const bit = i === 0 ? 1 : 2;
+        if (mask & bit) {
+          state.cameras[i] = { ...state.cameras[i], recording: true, led: 2, record_time: 1 };
+          if (state.activeTakeCameras?.[i]) {
+            state.activeTakeCameras[i].seen_recording = true;
+            state.activeTakeCameras[i].record_time = 5;
+            if (state.activeTakeCameras[i].first_record_ms === null) {
+              state.activeTakeCameras[i].first_record_ms = state.mono_ms + (i === 0 ? 300 : 320);
+            }
+          }
+        }
+      }
       client.emitStatus();
     },
     async connect() {
@@ -503,7 +596,13 @@ export function createMockBleClient({
       await wait(ackDelayMs);
       state.time_synced = true;
       state.time_anchor = { boot_id: state.boot_id, mono_ms: state.mono_ms, utc_ms: utcMs };
-      return { ok: true, utc_ms: utcMs, event_seq: state.events.length, take_id: state.take_id };
+      return {
+        ok: true,
+        utc_ms: utcMs,
+        target_cameras: state.target_cameras,
+        event_seq: state.events.length,
+        take_id: state.take_id,
+      };
     },
     async request(command) {
       if (!state.connected) throw new BleClientError('disconnected');
@@ -523,7 +622,12 @@ export function createMockBleClient({
       if (command.cmd === 'TIME_SYNC') {
         state.time_synced = true;
         state.time_anchor = { boot_id: state.boot_id, mono_ms: state.mono_ms, utc_ms: command.utc_ms };
-        return { ok: true, event_seq: state.events.length, take_id: state.take_id };
+        return {
+          ok: true,
+          target_cameras: state.target_cameras,
+          event_seq: state.events.length,
+          take_id: state.take_id,
+        };
       }
       if (command.cmd === 'INIT_PROJECT') {
         if (state.project_id !== '' || state.take_id > 0 || state.phase !== 'idle') {
@@ -532,10 +636,13 @@ export function createMockBleClient({
         }
         state.project_id = command.project_id;
         state.template_id = command.template_id;
+        state.target_cameras = 3;
+        state.active_participants = 0;
         return {
           ok: true,
           project_id: state.project_id,
           template_id: state.template_id,
+          target_cameras: state.target_cameras,
           event_seq: state.events.length,
           take_id: state.take_id,
         };
@@ -545,11 +652,26 @@ export function createMockBleClient({
           const reply = { ok: false, error: 'recording_active' };
           throw new BleClientError('recording_active', 'recording_active', { reply });
         }
+        const pointIdVal = command.point_id ?? '';
+        if (!isValidAsciiId(command.action_id, 63) || (pointIdVal !== '' && !isValidAsciiId(pointIdVal, 63))) {
+          const reply = { ok: false, error: 'invalid_request' };
+          throw new BleClientError('invalid_request', 'invalid_request', { reply });
+        }
+        if (command.target_cameras !== undefined && !isValidTargetCameras(command.target_cameras)) {
+          const reply = { ok: false, error: 'invalid_request' };
+          throw new BleClientError('invalid_request', 'invalid_request', { reply });
+        }
         state.action_id = command.action_id;
-        state.point_id = command.point_id ?? '';
+        state.point_id = pointIdVal;
+        if (command.target_cameras !== undefined) {
+          state.target_cameras = command.target_cameras;
+        } else if (!isValidTargetCameras(state.target_cameras)) {
+          state.target_cameras = 3;
+        }
         appendEvent('SELECT_ACTION', {
           action_id: state.action_id,
           point_id: state.point_id,
+          target_cameras: state.target_cameras,
         });
         return {
           ok: true,
@@ -557,6 +679,7 @@ export function createMockBleClient({
           template_id: state.template_id,
           action_id: state.action_id,
           point_id: state.point_id,
+          target_cameras: state.target_cameras,
           event_seq: state.events.length,
           take_id: state.take_id,
         };
@@ -572,29 +695,80 @@ export function createMockBleClient({
             reply: { ok: false, error: 'no_action_selected' },
           });
         }
+        if (command.target_cameras !== undefined && !isValidTargetCameras(command.target_cameras)) {
+          throw new BleClientError('invalid_request', 'invalid_request', {
+            reply: { ok: false, error: 'invalid_request' },
+          });
+        }
         if (command.command_id && command.command_id === state.last_command_id && state.last_command_take_id > 0) {
           return {
             ok: true,
             project_id: state.project_id,
             take_id: state.last_command_take_id,
+            target_cameras: state.target_cameras,
             event_seq: state.events.length,
             duplicate: true,
           };
         }
+        if (command.target_cameras !== undefined && command.target_cameras !== state.target_cameras) {
+          throw new BleClientError('target_mismatch', 'target_mismatch', {
+            reply: { ok: false, error: 'target_mismatch' },
+          });
+        }
+        const admission = computeCameraAdmission(state.cameras, state.target_cameras);
+        if (state.phase !== 'idle' || !admission.targetReady) {
+          throw new BleClientError('start_rejected_or_storage_full', 'start_rejected_or_storage_full', {
+            reply: { ok: false, error: 'start_rejected_or_storage_full' },
+          });
+        }
+        const participants = isValidTargetCameras(state.target_cameras) ? state.target_cameras : 3;
         state.take_id += 1;
         state.active_take_id = state.take_id;
+        state.active_participants = participants;
         state.last_command_id = command.command_id || '';
         state.last_command_take_id = state.take_id;
         state.phase = 'starting';
-        state.cameras[0] = { ...state.cameras[0], recording: false, led: 3, record_time: 0 };
-        state.cameras[1] = { ...state.cameras[1], recording: false, led: 3, record_time: 0 };
-        appendEvent('TAKE_BEGIN', {
+        const beginEvt = appendEvent('TAKE_BEGIN', {
           take_id: state.take_id,
           action_id: state.action_id,
           point_id: state.point_id,
           command_id: command.command_id || '',
           source: 'ble',
-          participants: 3,
+          participants,
+        });
+        state.activeTakeCameras = [0, 1].map(idx => {
+          const bit = idx === 0 ? 1 : 2;
+          const participating = Boolean(participants & bit);
+          if (participating) {
+            state.cameras[idx] = { ...state.cameras[idx], recording: false, led: 3, record_time: 0 };
+          }
+          return {
+            participating,
+            start_sent: participating,
+            start_failed: false,
+            stop_sent: false,
+            stop_failed: false,
+            seen_recording: false,
+            stop_confirmed: false,
+            disconnected: false,
+            reconnected: false,
+            stale: false,
+            unexpected_stop: false,
+            restarted: false,
+            unknown: false,
+            final_connected: Boolean(state.cameras[idx]?.connected),
+            final_recording: false,
+            disconnect_count: 0,
+            reconnect_count: 0,
+            record_time: 0,
+            battery: state.cameras[idx]?.battery ?? null,
+            start_ms: participating ? beginEvt.mono_ms + (idx === 0 ? 20 : 22) : null,
+            stop_ms: null,
+            first_record_ms: null,
+            last_record_ms: null,
+            stopped_ms: null,
+            last_sample_ms: state.cameras[idx]?.connected ? state.mono_ms : null,
+          };
         });
         if (autoConfirmRecordingMs > 0) {
           const timer = setTimeout(() => {
@@ -610,89 +784,117 @@ export function createMockBleClient({
           template_id: state.template_id,
           action_id: state.action_id,
           point_id: state.point_id,
+          target_cameras: state.target_cameras,
           take_id: state.take_id,
           active_take_id: state.active_take_id,
+          active_participants: state.active_participants,
           phase: state.phase,
           event_seq: state.events.length,
         };
       }
       if (command.cmd === 'STOP') {
         const targetTakeId = command.take_id || state.active_take_id || state.take_id;
+        if (state.phase === 'idle' && !state.active_take_id) {
+          state.cameras = state.cameras.map(cam => cam.connected && cam.recording
+            ? { ...cam, recording: false, led: 1, record_time: 0 }
+            : cam);
+          client.emitStatus();
+          return { ok: true, project_id: state.project_id, target_cameras: state.target_cameras,
+            take_id: targetTakeId, active_take_id: 0, phase: 'idle', event_seq: state.events.length };
+        }
         const beginEvt = [...state.events].reverse().find(e => e.type === 'TAKE_BEGIN' && e.take_id === targetTakeId);
+        const participants = isValidTargetCameras(beginEvt?.participants)
+          ? beginEvt.participants
+          : (isValidTargetCameras(state.active_participants) ? state.active_participants : 3);
+        const endCameras = [0, 1].map(idx => {
+          const bit = idx === 0 ? 1 : 2;
+          const participating = Boolean(participants & bit);
+          const tracked = state.activeTakeCameras?.[idx];
+          if (!participating) {
+            return {
+              participating: false,
+              start_sent: false,
+              start_failed: false,
+              stop_sent: false,
+              stop_failed: false,
+              seen_recording: false,
+              stop_confirmed: false,
+              disconnected: false,
+              reconnected: false,
+              stale: false,
+              unexpected_stop: false,
+              restarted: false,
+              unknown: false,
+              final_connected: Boolean(state.cameras[idx]?.connected),
+              final_recording: Boolean(state.cameras[idx]?.recording),
+              disconnect_count: 0,
+              reconnect_count: 0,
+              record_time: 0,
+              battery: state.cameras[idx]?.battery ?? null,
+              start_ms: null,
+              stop_ms: null,
+              first_record_ms: null,
+              last_record_ms: null,
+              stopped_ms: null,
+              last_sample_ms: state.cameras[idx]?.connected ? state.mono_ms : null,
+            };
+          }
+          const seenRec = Boolean(tracked?.seen_recording || state.cameras[idx]?.recording);
+          state.cameras[idx] = {
+            ...state.cameras[idx],
+            recording: false,
+            led: state.cameras[idx]?.connected ? 1 : 0,
+            record_time: 0,
+          };
+          return {
+            participating: true,
+            start_sent: true,
+            start_failed: false,
+            stop_sent: true,
+            stop_failed: false,
+            seen_recording: seenRec,
+            stop_confirmed: true,
+            disconnected: false,
+            reconnected: false,
+            stale: false,
+            unexpected_stop: false,
+            restarted: false,
+            unknown: false,
+            final_connected: Boolean(state.cameras[idx]?.connected),
+            final_recording: false,
+            disconnect_count: 0,
+            reconnect_count: 0,
+            record_time: seenRec ? 5 : 0,
+            battery: state.cameras[idx]?.battery ?? null,
+            start_ms: (beginEvt?.mono_ms ?? state.mono_ms) + (idx === 0 ? 20 : 22),
+            stop_ms: state.mono_ms - (idx === 0 ? 100 : 98),
+            first_record_ms: seenRec ? (beginEvt?.mono_ms ?? state.mono_ms) + (idx === 0 ? 300 : 320) : null,
+            last_record_ms: seenRec ? state.mono_ms - (idx === 0 ? 120 : 110) : null,
+            stopped_ms: state.mono_ms,
+            last_sample_ms: state.mono_ms,
+          };
+        });
+        const allParticipatingRecorded = endCameras.every(c => !c.participating || (c.seen_recording && c.stop_confirmed));
         state.phase = 'idle';
         state.active_take_id = 0;
-        state.cameras[0] = { ...state.cameras[0], recording: false, led: 1, record_time: 0 };
-        state.cameras[1] = { ...state.cameras[1], recording: false, led: 1, record_time: 0 };
+        state.active_participants = 0;
+        state.activeTakeCameras = null;
         appendEvent('TAKE_END', {
           take_id: targetTakeId,
           action_id: beginEvt?.action_id ?? state.action_id,
           point_id: beginEvt?.point_id ?? state.point_id,
           begin_boot_id: beginEvt?.boot_id ?? state.boot_id,
           begin_mono_ms: beginEvt?.mono_ms ?? (state.mono_ms - 4000),
-          reason: 'stopped',
-          complete: true,
+          reason: allParticipatingRecorded ? 'stopped' : 'cancelled',
+          complete: allParticipatingRecorded,
           observation_lost: false,
-          cameras: [
-            {
-              participating: true,
-              start_sent: true,
-              start_failed: false,
-              stop_sent: true,
-              stop_failed: false,
-              seen_recording: true,
-              stop_confirmed: true,
-              disconnected: false,
-              reconnected: false,
-              stale: false,
-              unexpected_stop: false,
-              restarted: false,
-              unknown: false,
-              final_connected: true,
-              final_recording: false,
-              disconnect_count: 0,
-              reconnect_count: 0,
-              record_time: 5,
-              battery: state.cameras[0].battery,
-              start_ms: (beginEvt?.mono_ms ?? state.mono_ms) + 20,
-              stop_ms: state.mono_ms - 100,
-              first_record_ms: (beginEvt?.mono_ms ?? state.mono_ms) + 300,
-              last_record_ms: state.mono_ms - 120,
-              stopped_ms: state.mono_ms,
-              last_sample_ms: state.mono_ms,
-            },
-            {
-              participating: true,
-              start_sent: true,
-              start_failed: false,
-              stop_sent: true,
-              stop_failed: false,
-              seen_recording: true,
-              stop_confirmed: true,
-              disconnected: false,
-              reconnected: false,
-              stale: false,
-              unexpected_stop: false,
-              restarted: false,
-              unknown: false,
-              final_connected: true,
-              final_recording: false,
-              disconnect_count: 0,
-              reconnect_count: 0,
-              record_time: 5,
-              battery: state.cameras[1].battery,
-              start_ms: (beginEvt?.mono_ms ?? state.mono_ms) + 22,
-              stop_ms: state.mono_ms - 98,
-              first_record_ms: (beginEvt?.mono_ms ?? state.mono_ms) + 320,
-              last_record_ms: state.mono_ms - 110,
-              stopped_ms: state.mono_ms,
-              last_sample_ms: state.mono_ms,
-            },
-          ],
+          cameras: endCameras,
         });
         client.emitStatus();
         return {
           ok: true,
           project_id: state.project_id,
+          target_cameras: state.target_cameras,
           take_id: targetTakeId,
           active_take_id: 0,
           phase: 'idle',
@@ -707,6 +909,7 @@ export function createMockBleClient({
         return {
           ok: true,
           project_id: state.project_id,
+          target_cameras: state.target_cameras,
           take_id: command.take_id,
           discard: Boolean(command.discard),
           event_seq: state.events.length,
@@ -721,6 +924,7 @@ export function createMockBleClient({
         return {
           ok: true,
           project_id: state.project_id,
+          target_cameras: state.target_cameras,
           take_id: command.take_id,
           action_id: command.action_id,
           point_id: command.point_id ?? '',
@@ -752,6 +956,7 @@ export function createMockBleClient({
         snapshot: {
           project_id: state.project_id,
           template_id: state.template_id,
+          target_cameras: state.target_cameras,
           event_seq: snapshotEvents.length,
           take_id: state.take_id,
           lines: snapshotEvents.length,
@@ -798,6 +1003,9 @@ const ICONS = Object.freeze({
   prev: `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>`,
   next: `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>`,
   search: `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`,
+  list: `<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>`,
+  history: `<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`,
+  settings: `<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>`,
   record: `<svg class="icon icon-lg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle></svg>`,
   stop: `<svg class="icon icon-lg" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>`,
   copy: `<svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`,
@@ -824,133 +1032,182 @@ export function getAppShellMarkup() {
         </details>
       </div>
     </header>
-    <main class="bento-grid" data-bento-grid="true">
-      <section id="card-connection" class="bento-card bento-span-2" aria-labelledby="title-connection">
-        <p id="mock-notice" class="mock-notice" hidden>演示模式 · 不会连接真实设备</p>
-        <div class="card-header">
-          <div class="card-title-group">
-            ${ICONS.bluetooth}
-            <div>
-              <h2 id="title-connection" class="card-title">设备连接</h2>
-              <p id="template-subtitle" class="card-subtitle"></p>
+    <main class="bento-grid workbench-shell" data-bento-grid="true">
+      <p id="mock-notice" class="mock-notice" hidden>演示模式 · 不会连接真实设备</p>
+      <section id="topbar-summary" class="topbar-summary bento-span-2" aria-label="遥控器与项目概览">
+        <div class="topbar-summary-left">
+          <span id="conn-badge" class="badge" data-state="disconnected">
+            <span class="badge-dot"></span><span id="conn-badge-text">未连接</span>
+          </span>
+          <span id="topbar-project-summary" class="topbar-meta-text">未创建项目</span>
+        </div>
+        <div class="topbar-summary-actions">
+          <button id="btn-toggle-settings" type="button" class="btn" aria-expanded="false">${ICONS.settings}<span id="btn-toggle-settings-label">设备与项目</span></button>
+          <button id="btn-theme-toggle" type="button" class="btn btn-icon-only" aria-label="切换明暗主题">${ICONS.theme}</button>
+        </div>
+      </section>
+      <div class="workbench-columns">
+        <div id="view-shoot" class="view-panel" data-view-panel="shoot">
+          <section id="card-connection" class="bento-card bento-span-2" aria-labelledby="title-connection">
+            <div class="card-header">
+              <div class="card-title-group">
+                ${ICONS.bluetooth}
+                <div>
+                  <h2 id="title-connection" class="card-title">设备连接与项目设置</h2>
+                  <p id="template-subtitle" class="card-subtitle"></p>
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="card-header-actions">
-            <span id="conn-badge" class="badge" data-state="disconnected">
-              <span class="badge-dot"></span><span id="conn-badge-text">未连接</span>
-            </span>
-            <button id="btn-theme-toggle" type="button" class="btn btn-icon-only" aria-label="切换明暗主题">${ICONS.theme}</button>
-          </div>
+            <div class="kv-grid">
+              <div class="kv-item"><span class="kv-label">当前项目</span><span id="meta-project-id" class="kv-value">尚未创建</span></div>
+              <div class="kv-item"><span class="kv-label">已拍段数</span><span id="meta-take-id" class="kv-value">0</span></div>
+            </div>
+            <div class="button-row">
+              <button id="btn-connect" type="button" class="btn btn-primary">${ICONS.bluetooth}<span id="btn-connect-label">连接遥控器</span></button>
+              <button id="btn-sync-log" type="button" class="btn" disabled>${ICONS.sync}<span>更新拍摄记录</span></button>
+              <label for="input-template-file" class="file-upload-label" role="button" tabindex="0">${ICONS.upload}<span>导入拍摄清单</span></label>
+              <input id="input-template-file" type="file" accept=".json,application/json" aria-label="选择拍摄清单文件" class="visually-hidden" />
+            </div>
+            <div id="init-project-box" class="init-box" hidden>
+              <h3 class="card-title">新建拍摄项目</h3>
+              <p class="card-subtitle">给这次拍摄起一个编号，方便之后在电脑上整理视频。可使用字母、数字、下划线或短横线。</p>
+              <div class="form-grid">
+                <label class="field-label" for="input-init-project-id"><span>项目编号</span><input id="input-init-project-id" type="text" class="input-field" maxlength="63" placeholder="输入本次拍摄的编号" /></label>
+                <label class="field-label" for="input-init-template-id"><span>拍摄清单编号</span><input id="input-init-template-id" type="text" class="input-field" maxlength="63" placeholder="输入拍摄清单编号" /></label>
+              </div>
+              <button id="btn-init-project" type="button" class="btn btn-primary">新建项目</button>
+            </div>
+            <details id="device-details" class="device-details">
+              <summary>设备详情</summary>
+              <div class="kv-grid">
+                <div class="kv-item"><span class="kv-label">拍摄清单编号</span><span id="meta-template-id" class="kv-value"></span></div>
+                <div class="kv-item"><span class="kv-label">设备已保存 / 手机已保存</span><span id="meta-event-seq" class="kv-value">0 / 0</span></div>
+                <div class="kv-item"><span class="kv-label">遥控器剩余空间</span><span id="meta-free-bytes" class="kv-value">未知</span></div>
+                <div class="kv-item"><span class="kv-label">时间校准与记录保存</span><span id="meta-time-sync" class="kv-value">未连接</span></div>
+              </div>
+              <div id="usb-reset-notice" class="notice-box" hidden>
+                <span>需要清空项目？</span>
+                <span class="card-subtitle">请先在电脑上备份，再连接电脑清空遥控器。手机上不能清空项目。</span>
+              </div>
+            </details>
+          </section>
+          <section id="card-current-action" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-current-action">
+            <div class="card-header">
+              <div class="card-title-group">${ICONS.step}<h2 id="title-current-action" class="card-title">当前拍摄内容</h2></div>
+              <div class="card-header-actions">
+                <span id="action-pending-badge" class="badge" data-state="warn" hidden>正在保存动作，请稍候</span>
+                <button id="btn-open-action-list" type="button" class="btn">${ICONS.list}<span>挑动作 / 清单</span></button>
+              </div>
+            </div>
+            <div class="current-action-hero">
+              <div class="current-action-top">
+                <div class="current-action-badges"><span id="confirmed-action-id" class="current-action-code">未选择</span><span id="confirmed-point-id" class="badge" hidden>不指定拍摄位置</span></div>
+                <div class="current-action-badges"><span id="confirmed-action-type" class="badge" hidden></span><span id="confirmed-action-group" class="badge" hidden></span></div>
+              </div>
+              <p id="confirmed-action-name" class="current-action-name">请从拍摄清单中选择一项</p>
+            </div>
+            <div id="points-container" hidden><span class="kv-label">拍摄位置</span><div id="point-pills" class="pill-strip"></div></div>
+            <div class="button-row">
+              <button id="btn-prev-action" type="button" class="btn">${ICONS.prev}<span id="btn-prev-label">上一项</span></button>
+              <button id="btn-next-action" type="button" class="btn"><span id="btn-next-label">下一项</span>${ICONS.next}</button>
+            </div>
+          </section>
+          <section id="card-record-ledger" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-record-ledger">
+            <div class="card-header">
+              <div class="card-title-group">${ICONS.record}<h2 id="title-record-ledger" class="card-title">录像与相机控制</h2></div>
+              <span id="phase-badge" class="badge" data-state="disconnected">状态：待机</span>
+            </div>
+            <div id="target-camera-strip" class="target-camera-strip" role="group" aria-label="选择本段使用的相机">
+              <button id="btn-target-both" type="button" class="target-cam-btn is-active" data-target-cameras="3" aria-pressed="true">双机同拍</button>
+              <button id="btn-target-a" type="button" class="target-cam-btn" data-target-cameras="1" aria-pressed="false">只拍 A 机</button>
+              <button id="btn-target-b" type="button" class="target-cam-btn" data-target-cameras="2" aria-pressed="false">只拍 B 机</button>
+            </div>
+            <div class="record-phase-bar"><span id="record-observation-text">请先连接遥控器</span><span id="active-take-badge" class="badge" hidden></span></div>
+            <button id="btn-record-main" type="button" class="btn btn-ready record-cta-btn" data-mode="start">
+              <span id="btn-record-icon">${ICONS.record}</span><span id="btn-record-label">开始录像</span>
+            </button>
+            <div class="camera-pair-grid">
+              ${['a', 'b'].map((camera, index) => {
+                const camLetter = index === 0 ? 'A' : 'B';
+                return `
+              <section id="card-cam-${camera}" class="bento-card bento-span-1 is-disconnected" aria-labelledby="title-cam-${camera}">
+                <div class="card-header">
+                  <div id="cam-${camera}-title-wrap" class="card-title-group" hidden>${ICONS.camera}<h2 id="title-cam-${camera}" class="card-title">相机 ${camLetter}</h2></div>
+                  <span id="cam-${camera}-badge" class="badge" data-state="disconnected"><span class="badge-dot"></span><span id="cam-${camera}-badge-text">${camLetter}机未连接</span></span>
+                </div>
+                <div id="cam-${camera}-metrics" class="cam-metrics" hidden>
+                  <div class="kv-item"><span class="kv-label">电量</span><span id="cam-${camera}-battery" class="kv-value"></span></div>
+                  <div class="kv-item"><span class="kv-label">拍摄状态</span><span id="cam-${camera}-mode" class="kv-value">未连接</span></div>
+                </div>
+                <details id="cam-${camera}-details" class="device-details" hidden>
+                  <summary>相机详情</summary>
+                  <div class="kv-grid">
+                    <div class="kv-item"><span class="kv-label">最近一次状态更新</span><span id="cam-${camera}-fresh" class="kv-value">未连接</span></div>
+                    <div class="kv-item"><span class="kv-label">相机返回的计时数值</span><span id="cam-${camera}-record-time" class="kv-value">0</span></div>
+                  </div>
+                  <p class="card-subtitle">计时单位尚未确认，这个数值不作为录像时长。</p>
+                  <div class="cam-led-box"><span>遥控器指示灯</span><span id="cam-${camera}-led" class="badge"></span></div>
+                </details>
+              </section>`;
+              }).join('')}
+            </div>
+            <div id="recent-take-bar" class="recent-take-bar">
+              <span id="recent-take-summary" class="recent-take-text">最近一段：还没有拍摄记录</span>
+              <button id="btn-open-records" type="button" class="btn">${ICONS.history}<span>已拍记录</span></button>
+            </div>
+          </section>
         </div>
-        <div class="kv-grid">
-          <div class="kv-item"><span class="kv-label">当前项目</span><span id="meta-project-id" class="kv-value">尚未创建</span></div>
-          <div class="kv-item"><span class="kv-label">已拍段数</span><span id="meta-take-id" class="kv-value">0</span></div>
+        <div id="view-list" class="view-panel" data-view-panel="list" hidden>
+          <section id="card-action-search" class="bento-card bento-span-2" aria-labelledby="title-action-search">
+            <div class="card-header">
+              <div class="card-title-group">${ICONS.search}<h2 id="title-action-search" class="card-title">拍摄清单</h2></div>
+              <div class="card-header-actions">
+                <span id="action-count-badge" class="badge">0 项</span>
+                <button id="btn-list-back-shoot" type="button" class="btn">${ICONS.prev}<span>返回现场拍摄</span></button>
+              </div>
+            </div>
+            <div id="list-selection-return-bar" class="list-return-bar">
+              <span id="list-selected-summary" class="topbar-meta-text">当前动作：未选择</span>
+              <button id="btn-after-select-return" type="button" class="btn btn-primary">去拍摄此项</button>
+            </div>
+            <div class="search-box-wrap">${ICONS.search}<input id="input-action-search" type="search" class="input-field search-input" placeholder="搜索编号或拍摄内容" aria-label="搜索编号或拍摄内容" /></div>
+            <details id="search-help-details" class="search-help-details">
+              <summary>搜索帮助</summary>
+              <p class="search-help-text">输入 27 即可找到 D27，也可输入拍摄内容名称、区域或位置进行查找。</p>
+            </details>
+            <div id="filter-group-pills" class="pill-strip" role="group" aria-label="按区域筛选"></div>
+            <div id="filter-status-pills" class="pill-strip" role="group" aria-label="按类别和已拍情况筛选"></div>
+            <div id="action-list" class="action-list" role="list"></div>
+          </section>
         </div>
-        <div class="button-row">
-          <button id="btn-connect" type="button" class="btn btn-primary">${ICONS.bluetooth}<span id="btn-connect-label">连接遥控器</span></button>
-          <button id="btn-sync-log" type="button" class="btn" disabled>${ICONS.sync}<span>更新拍摄记录</span></button>
-          <label for="input-template-file" class="file-upload-label" role="button" tabindex="0">${ICONS.upload}<span>导入拍摄清单</span></label>
-          <input id="input-template-file" type="file" accept=".json,application/json" aria-label="选择拍摄清单文件" class="visually-hidden" />
+        <div id="view-records" class="view-panel" data-view-panel="records" hidden>
+          <section id="card-records-history" class="bento-card bento-span-2" aria-labelledby="title-records-history">
+            <div class="card-header">
+              <div class="card-title-group">${ICONS.history}<h2 id="title-records-history" class="card-title">已拍记录</h2></div>
+              <div class="card-header-actions">
+                <span id="takes-count-badge" class="badge">共 0 段</span>
+                <button id="btn-records-sync" type="button" class="btn" disabled>${ICONS.sync}<span>更新拍摄记录</span></button>
+                <button id="btn-records-back-shoot" type="button" class="btn">${ICONS.prev}<span>返回现场拍摄</span></button>
+              </div>
+            </div>
+            <div id="recent-takes-list" class="takes-list"></div>
+            <div class="backup-section">
+              <h3 class="backup-title">备份拍摄记录</h3>
+              <p class="card-subtitle">备份文件只包含拍摄记录，不包含相机里的视频。</p>
+              <div class="button-row">
+                <button id="btn-backup-copy" type="button" class="btn btn-muted-outline">${ICONS.copy}<span>复制备份</span></button>
+                <button id="btn-backup-share" type="button" class="btn btn-muted-outline">${ICONS.share}<span>分享备份</span></button>
+                <button id="btn-backup-download" type="button" class="btn btn-muted-outline">${ICONS.download}<span>保存备份文件</span></button>
+              </div>
+            </div>
+          </section>
         </div>
-        <div id="init-project-box" class="init-box" hidden>
-          <h3 class="card-title">新建拍摄项目</h3>
-          <p class="card-subtitle">给这次拍摄起一个编号，方便之后在电脑上整理视频。可使用字母、数字、下划线或短横线。</p>
-          <div class="form-grid">
-            <label class="field-label" for="input-init-project-id"><span>项目编号</span><input id="input-init-project-id" type="text" class="input-field" maxlength="63" placeholder="输入本次拍摄的编号" /></label>
-            <label class="field-label" for="input-init-template-id"><span>拍摄清单编号</span><input id="input-init-template-id" type="text" class="input-field" maxlength="63" placeholder="输入拍摄清单编号" /></label>
-          </div>
-          <button id="btn-init-project" type="button" class="btn btn-primary">新建项目</button>
-        </div>
-        <details id="device-details" class="device-details">
-          <summary>设备详情</summary>
-          <div class="kv-grid">
-            <div class="kv-item"><span class="kv-label">拍摄清单编号</span><span id="meta-template-id" class="kv-value"></span></div>
-            <div class="kv-item"><span class="kv-label">设备已保存 / 手机已保存</span><span id="meta-event-seq" class="kv-value">0 / 0</span></div>
-            <div class="kv-item"><span class="kv-label">遥控器剩余空间</span><span id="meta-free-bytes" class="kv-value">未知</span></div>
-            <div class="kv-item"><span class="kv-label">时间校准与记录保存</span><span id="meta-time-sync" class="kv-value">未连接</span></div>
-          </div>
-          <div id="usb-reset-notice" class="notice-box" hidden>
-            <span>需要清空项目？</span>
-            <span class="card-subtitle">请先在电脑上备份，再连接电脑清空遥控器。手机上不能清空项目。</span>
-          </div>
-        </details>
-      </section>
-      ${['a', 'b'].map((camera, index) => {
-        const camLetter = index === 0 ? 'A' : 'B';
-        return `
-      <section id="card-cam-${camera}" class="bento-card bento-span-1 is-disconnected" aria-labelledby="title-cam-${camera}">
-        <div class="card-header">
-          <div id="cam-${camera}-title-wrap" class="card-title-group" hidden>${ICONS.camera}<h2 id="title-cam-${camera}" class="card-title">相机 ${camLetter}</h2></div>
-          <span id="cam-${camera}-badge" class="badge" data-state="disconnected"><span class="badge-dot"></span><span id="cam-${camera}-badge-text">${camLetter}机未连接</span></span>
-        </div>
-        <div id="cam-${camera}-metrics" class="cam-metrics" hidden>
-          <div class="kv-item"><span class="kv-label">电量</span><span id="cam-${camera}-battery" class="kv-value"></span></div>
-          <div class="kv-item"><span class="kv-label">拍摄状态</span><span id="cam-${camera}-mode" class="kv-value">未连接</span></div>
-        </div>
-        <details id="cam-${camera}-details" class="device-details" hidden>
-          <summary>相机详情</summary>
-          <div class="kv-grid">
-            <div class="kv-item"><span class="kv-label">最近一次状态更新</span><span id="cam-${camera}-fresh" class="kv-value">未连接</span></div>
-            <div class="kv-item"><span class="kv-label">相机返回的计时数值</span><span id="cam-${camera}-record-time" class="kv-value">0</span></div>
-          </div>
-          <p class="card-subtitle">计时单位尚未确认，这个数值不作为录像时长。</p>
-          <div class="cam-led-box"><span>遥控器指示灯</span><span id="cam-${camera}-led" class="badge"></span></div>
-        </details>
-      </section>`;
-      }).join('')}
-      <section id="card-current-action" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-current-action">
-        <div class="card-header">
-          <div class="card-title-group">${ICONS.step}<h2 id="title-current-action" class="card-title">当前拍摄内容</h2></div>
-          <span id="action-pending-badge" class="badge" data-state="warn" hidden>正在保存动作，请稍候</span>
-        </div>
-        <div class="current-action-hero">
-          <div class="current-action-top">
-            <div class="current-action-badges"><span id="confirmed-action-id" class="current-action-code">未选择</span><span id="confirmed-point-id" class="badge" hidden>不指定拍摄位置</span></div>
-            <div class="current-action-badges"><span id="confirmed-action-type" class="badge" hidden></span><span id="confirmed-action-group" class="badge" hidden></span></div>
-          </div>
-          <p id="confirmed-action-name" class="current-action-name">请从拍摄清单中选择一项</p>
-        </div>
-        <div id="points-container" hidden><span class="kv-label">拍摄位置</span><div id="point-pills" class="pill-strip"></div></div>
-        <div class="button-row">
-          <button id="btn-prev-action" type="button" class="btn">${ICONS.prev}<span id="btn-prev-label">上一项</span></button>
-          <button id="btn-next-action" type="button" class="btn"><span id="btn-next-label">下一项</span>${ICONS.next}</button>
-        </div>
-      </section>
-      <section id="card-action-search" class="bento-card bento-span-2" aria-labelledby="title-action-search">
-        <div class="card-header">
-          <div class="card-title-group">${ICONS.search}<h2 id="title-action-search" class="card-title">拍摄清单</h2></div>
-          <span id="action-count-badge" class="badge">0 项</span>
-        </div>
-        <div class="search-box-wrap">${ICONS.search}<input id="input-action-search" type="search" class="input-field search-input" placeholder="搜索编号或拍摄内容" aria-label="搜索编号或拍摄内容" /></div>
-        <details id="search-help-details" class="search-help-details">
-          <summary>搜索帮助</summary>
-          <p class="search-help-text">输入 27 即可找到 D27，也可输入拍摄内容名称、区域或位置进行查找。</p>
-        </details>
-        <div id="filter-group-pills" class="pill-strip" role="group" aria-label="按区域筛选"></div>
-        <div id="filter-status-pills" class="pill-strip" role="group" aria-label="按类别和已拍情况筛选"></div>
-        <div id="action-list" class="action-list" role="list"></div>
-      </section>
-      <section id="card-record-ledger" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-record-ledger">
-        <div class="card-header">
-          <div class="card-title-group">${ICONS.record}<h2 id="title-record-ledger" class="card-title">双机录像控制</h2></div>
-          <span id="phase-badge" class="badge" data-state="disconnected">状态：待机</span>
-        </div>
-        <button id="btn-record-main" type="button" class="btn btn-ready record-cta-btn" data-mode="start">
-          <span id="btn-record-icon">${ICONS.record}</span><span id="btn-record-label">开始录像</span>
-        </button>
-        <div class="record-phase-bar"><span id="record-observation-text">请先连接遥控器</span><span id="active-take-badge" class="badge" hidden></span></div>
-        <div class="card-header"><h3 class="card-title">已拍记录</h3><span id="takes-count-badge" class="badge">共 0 段</span></div>
-        <div id="recent-takes-list" class="takes-list"></div>
-        <div class="backup-section">
-          <h3 class="backup-title">备份拍摄记录</h3>
-          <p class="card-subtitle">备份文件只包含拍摄记录，不包含相机里的视频。</p>
-          <div class="button-row">
-            <button id="btn-backup-copy" type="button" class="btn btn-muted-outline">${ICONS.copy}<span>复制备份</span></button>
-            <button id="btn-backup-share" type="button" class="btn btn-muted-outline">${ICONS.share}<span>分享备份</span></button>
-            <button id="btn-backup-download" type="button" class="btn btn-muted-outline">${ICONS.download}<span>保存备份文件</span></button>
-          </div>
-        </div>
-      </section>
+      </div>
+      <nav id="bottom-view-nav" class="bottom-view-nav" aria-label="工作台视图切换">
+        <button id="nav-btn-shoot" type="button" class="view-nav-btn is-active" data-view-nav="shoot" aria-pressed="true">${ICONS.record}<span>现场拍摄</span></button>
+        <button id="nav-btn-list" type="button" class="view-nav-btn" data-view-nav="list" aria-pressed="false">${ICONS.list}<span>拍摄清单</span></button>
+        <button id="nav-btn-records" type="button" class="view-nav-btn" data-view-nav="records" aria-pressed="false">${ICONS.history}<span>已拍记录</span></button>
+      </nav>
     </main>
   `;
 }
@@ -996,7 +1253,19 @@ export function createApp({
   }
 
   const doc = root.ownerDocument || (typeof document !== 'undefined' ? document : null);
+  const win = doc?.defaultView || null;
   const fetchFn = injectedFetch || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+
+  function isDesktopLayout() {
+    if (!win) return false;
+    if (typeof win.matchMedia === 'function') {
+      const mql = win.matchMedia('(min-width: 768px)');
+      if (mql && typeof mql.matches === 'boolean') {
+        return mql.matches;
+      }
+    }
+    return Number.isFinite(win.innerWidth) && win.innerWidth >= 768;
+  }
 
   if (!root.querySelector('[data-bento-grid="true"]')) {
     root.innerHTML = getAppShellMarkup();
@@ -1018,12 +1287,16 @@ export function createApp({
     connecting: false,
     syncingLog: false,
     lastStatusReceivedAt: 0,
+    activeView: 'shoot', // 'shoot' | 'list' | 'records'
+    desktopMode: false,
+    viewScrollTop: { shoot: 0, list: 0, records: 0 },
+    settingsExpanded: false,
     template: normalizeTemplate(DEFAULT_TEMPLATE),
     templateVersion: 1,
     searchQuery: '',
     groupFilter: 'all',
     statusFilter: 'all',
-    pendingSelect: null, // { action_id, point_id } while awaiting SELECT_ACTION ACK
+    pendingSelect: null, // { action_id, point_id, target_cameras } while awaiting SELECT_ACTION ACK
     pendingStartCommandId: null,
     editingReassignTakeId: null,
     reassignDrafts: new Map(), // take_id -> { action_id, point_id }
@@ -1034,6 +1307,9 @@ export function createApp({
       template_id: DEFAULT_TEMPLATE.template_id,
       action_id: '',
       point_id: '',
+      target_cameras: 3,
+      active_participants: 0,
+      selectionSupported: true,
       event_seq: 0,
       take_id: 0,
       active_take_id: 0,
@@ -1058,6 +1334,11 @@ export function createApp({
     },
   };
 
+  let pendingStart = null;
+  let pendingStop = null;
+  let statusVersion = 0;
+  let connectionVersion = 0;
+
   // Keyed DOM caches so interactive controls are NEVER destroyed on tick/STATUS
   const pointPillCache = {
     signature: '',
@@ -1070,7 +1351,7 @@ export function createApp({
   const statusPillNodes = new Map();
   const actionRowCache = new Map(); // action_id -> { btn, idSpan, titleSpan, metaSpan, pendingBadge, countBadge }
   let emptyActionHintEl = null;
-  const takeItemCache = new Map(); // take_id -> { itemEl, idSpan, attrSpan, discardBadge, endBadge, camASpan, camBSpan, btnDiscard, btnDiscardLabel, btnReassign, panel, actionSelect, pointSelect, confirmBtn, cancelBtn, populatedTemplateVersion, populatedActionId }
+  const takeItemCache = new Map(); // take_id -> { itemEl, idSpan, attrSpan, participantsBadge, discardBadge, endBadge, camASpan, camBSpan, btnDiscard, btnDiscardLabel, btnReassign, panel, actionSelect, pointSelect, confirmBtn, cancelBtn, populatedTemplateVersion, populatedActionId }
   let emptyTakesHintEl = null;
 
   // Query DOM elements inside root
@@ -1115,9 +1396,14 @@ export function createApp({
       disconnected: '连接已断开，请重新连接遥控器。',
       not_connected: '请先连接遥控器。',
       timeout: '没有收到确认，请先更新拍摄记录，不要重复点击。',
-      recording_active: '请先停止录像，再修改拍摄内容。',
+      recording_active: '请先停止录像，再修改拍摄内容或相机选择。',
       usb_only: '这个操作需要连接电脑完成。',
       storage_full: '遥控器空间不足，请先在电脑上备份。',
+      start_rejected_or_storage_full: '所选相机尚未就绪，或有相机正在录像、遥控器空间不足。',
+      target_mismatch: '相机选择尚未同步到遥控器，请重新确认所选相机后再试。',
+      invalid_request: '请求内容无效，请检查拍摄内容与相机选择。',
+      invalid_select_ack: '遥控器未确认所选相机，请重试或升级遥控器固件。',
+      unsupported_firmware: '当前遥控器固件暂不支持相机选择，请先升级遥控器固件。',
       NotFoundError: '没有选中遥控器。',
       NotAllowedError: '请允许浏览器使用蓝牙。',
       project_uninitialized: '请先新建拍摄项目。',
@@ -1130,6 +1416,27 @@ export function createApp({
     });
     render();
     return code;
+  }
+
+  function switchView(viewName) {
+    if (viewName !== 'shoot' && viewName !== 'list' && viewName !== 'records') return;
+    const prevView = state.activeView;
+    const prevPanel = el(`view-${prevView}`);
+    const prevScroll = prevPanel?.scrollTop || win?.scrollY || doc?.documentElement?.scrollTop || 0;
+    state.viewScrollTop[prevView] = prevScroll;
+    state.activeView = viewName;
+    render();
+    const nextScroll = state.viewScrollTop[viewName] ?? 0;
+    const nextPanel = el(`view-${viewName}`);
+    if (state.desktopMode && nextPanel && win) {
+      const bannerHeight = el('status-banner')?.parentElement?.getBoundingClientRect().height || 0;
+      win.scrollTo(0, Math.max(0, nextPanel.getBoundingClientRect().top + (win.scrollY || 0) - bannerHeight));
+      return;
+    }
+    if (nextPanel) nextPanel.scrollTop = nextScroll;
+    if (win && typeof win.scrollTo === 'function') {
+      win.scrollTo(0, nextScroll);
+    }
   }
 
   function refreshLocalLedger(projectId = state.status.project_id) {
@@ -1147,15 +1454,23 @@ export function createApp({
 
   function applyStatusSnapshot(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') return;
+    statusVersion += 1;
     state.lastStatusReceivedAt = now();
     const prevProjectId = state.status.project_id;
     if (typeof snapshot.project_id === 'string') state.status.project_id = snapshot.project_id;
     if (typeof snapshot.template_id === 'string' && snapshot.template_id) state.status.template_id = snapshot.template_id;
-    // Do NOT overwrite confirmed action from status if a SELECT_ACTION request is mid-flight
+    const hasValidTarget = isValidTargetCameras(snapshot.target_cameras);
+    const hasValidActive = isValidActiveParticipants(snapshot.active_participants);
+    state.status.selectionSupported = Boolean(hasValidTarget && hasValidActive);
+    // Do NOT overwrite confirmed action or target_cameras from status if a SELECT_ACTION request is mid-flight
     if (!state.pendingSelect) {
       if (typeof snapshot.action_id === 'string') state.status.action_id = snapshot.action_id;
       if (typeof snapshot.point_id === 'string') state.status.point_id = snapshot.point_id;
+      state.status.target_cameras = hasValidTarget ? snapshot.target_cameras : null;
+    } else if (!hasValidTarget) {
+      state.status.target_cameras = null;
     }
+    state.status.active_participants = hasValidActive ? snapshot.active_participants : null;
     if (Number.isSafeInteger(snapshot.event_seq)) state.status.event_seq = snapshot.event_seq;
     if (Number.isSafeInteger(snapshot.take_id)) state.status.take_id = snapshot.take_id;
     if (Number.isSafeInteger(snapshot.active_take_id)) state.status.active_take_id = snapshot.active_take_id;
@@ -1172,10 +1487,14 @@ export function createApp({
         { ...state.status.cameras[1], ...snapshot.cameras[1] },
       ];
     }
-    if (state.status.phase === 'idle') {
+    if (state.status.phase === 'idle' && !pendingStart) {
       state.pendingStartCommandId = null;
     }
-    if (state.status.project_id && (prevProjectId !== state.status.project_id || state.ledger.project_id !== state.status.project_id)) {
+    if (prevProjectId !== state.status.project_id) {
+      state.editingReassignTakeId = null;
+      state.reassignDrafts.clear();
+    }
+    if (prevProjectId !== state.status.project_id || state.ledger.project_id !== state.status.project_id) {
       refreshLocalLedger(state.status.project_id);
     }
     render();
@@ -1191,6 +1510,7 @@ export function createApp({
   const prevOnConnection = client.onConnection;
   client.onConnection = async info => {
     if (typeof prevOnConnection === 'function') await prevOnConnection(info);
+    connectionVersion += 1;
     state.connected = Boolean(info?.connected);
     state.connecting = false;
     if (!info?.connected) {
@@ -1220,6 +1540,7 @@ export function createApp({
 
   function renderCameraCard(prefix, cam, receiptStale) {
     const camLetter = prefix === 'cam-a' ? 'A' : 'B';
+    const slotBit = prefix === 'cam-a' ? 1 : 2;
     const cardEl = el(`card-${prefix}`);
     const titleWrapEl = el(`${prefix}-title-wrap`);
     const badgeEl = el(`${prefix}-badge`);
@@ -1232,15 +1553,24 @@ export function createApp({
     const modeEl = el(`${prefix}-mode`);
     const ledEl = el(`${prefix}-led`);
 
+    const isTakeActive = (state.status.phase && state.status.phase !== 'idle') || Boolean(pendingStart);
+    const activeOrTargetMask = isTakeActive
+      ? (isValidTargetCameras(state.status.active_participants) ? state.status.active_participants : state.status.target_cameras)
+      : state.status.target_cameras;
+    const isSelectedForTake = !isValidTargetCameras(activeOrTargetMask) ? true : Boolean(activeOrTargetMask & slotBit);
+
     const connected = Boolean(state.connected && cam?.connected);
     const stale = Boolean(state.connected && (receiptStale || (cam?.connected && cam?.fresh === false)));
     const recording = connected && !stale && Boolean(cam?.recording);
+    const cachedRecording = connected && stale && Boolean(cam?.recording);
     const showConnectedDetails = connected || stale;
 
     if (cardEl) {
       cardEl.classList.toggle('is-disconnected', !showConnectedDetails);
       cardEl.classList.toggle('is-stale', stale);
-      cardEl.classList.toggle('is-recording', recording);
+      cardEl.classList.toggle('is-recording', recording || cachedRecording);
+      cardEl.classList.toggle('is-unselected', Boolean(state.connected && !isSelectedForTake && !recording && !cachedRecording));
+      cardEl.dataset.selected = isSelectedForTake ? 'true' : 'false';
     }
     if (titleWrapEl) titleWrapEl.hidden = !showConnectedDetails;
     if (metricsEl) metricsEl.hidden = !showConnectedDetails;
@@ -1251,20 +1581,23 @@ export function createApp({
 
     if (badgeEl) {
       const targetTextEl = badgeTextEl || badgeEl;
-      if (!showConnectedDetails) {
-        setTextIfChanged(targetTextEl, `${camLetter}机未连接`);
-        badgeEl.dataset.state = 'disconnected';
-      } else if (stale) {
-        setTextIfChanged(targetTextEl, '暂时无法确认');
-        badgeEl.dataset.state = 'stale';
-      } else if (recording) {
+      if (recording) {
         setTextIfChanged(targetTextEl, '正在录像');
         badgeEl.dataset.state = 'recording';
+      } else if (!showConnectedDetails) {
+        setTextIfChanged(
+          targetTextEl,
+          state.connected && !isSelectedForTake ? `${camLetter}机未连接（本段不用）` : `${camLetter}机未连接`
+        );
+        badgeEl.dataset.state = 'disconnected';
+      } else if (stale) {
+        setTextIfChanged(targetTextEl, cachedRecording ? '上次状态：录像中（待确认）' : isSelectedForTake ? '暂时无法确认' : '状态未更新（本段不用）');
+        badgeEl.dataset.state = 'stale';
       } else if (cam?.ready && !cam?.sleeping && cam?.video !== false) {
-        setTextIfChanged(targetTextEl, '可以拍摄');
+        setTextIfChanged(targetTextEl, isSelectedForTake ? '可以拍摄' : '本段不用');
         badgeEl.dataset.state = 'ready';
       } else {
-        setTextIfChanged(targetTextEl, '暂时无法确认');
+        setTextIfChanged(targetTextEl, isSelectedForTake ? '暂时无法确认' : '本段不用');
         badgeEl.dataset.state = 'warn';
       }
     }
@@ -1294,8 +1627,9 @@ export function createApp({
     if (modeEl) {
       setTextIfChanged(modeEl,
         !showConnectedDetails ? '未连接' :
-        stale ? '暂时无法确认' :
         recording ? '正在录像' :
+        stale ? '暂时无法确认' :
+        !isSelectedForTake ? '本段不用' :
         cam?.sleeping ? '休眠中' :
         cam?.video === false ? '请切到录像模式' :
         cam?.ready ? '可以拍摄' : '暂时无法确认');
@@ -1319,31 +1653,64 @@ export function createApp({
 
     const cams = Array.isArray(state.status.cameras) ? state.status.cameras : [];
     const hasFreshStatus = state.connected && state.lastStatusReceivedAt > 0 && !receiptStale;
-    const anyCamStale = !hasFreshStatus || cams.some(c => c?.connected && c?.fresh === false);
+    const selectionSupported = state.status.selectionSupported !== false;
+    const targetCameras = state.status.target_cameras;
+    const effectiveTarget = isValidTargetCameras(targetCameras) ? targetCameras : 3;
+    const admission = computeCameraAdmission(cams, effectiveTarget);
     const anyCamRecording = hasFreshStatus && cams.some(c => c?.connected && c?.fresh !== false && c?.recording === true);
-    const allCamsReady = hasFreshStatus && cams.length >= 2 && cams.every(
-      c => c?.connected && c?.fresh !== false && !c?.recording && !c?.sleeping && c?.video !== false && c?.ready === true
-    );
+    const anyConnectedRecording = admission.anyConnectedRecording;
+    const isTakeActive = phase !== 'idle' || Boolean(pendingStart) || (state.status.active_take_id > 0);
+    const activeMask = isTakeActive
+      ? (isValidTargetCameras(state.status.active_participants) ? state.status.active_participants : effectiveTarget)
+      : effectiveTarget;
+    const anySelectedStale = !hasFreshStatus || admission.selectedStale;
+    const selectedReady = hasFreshStatus && selectionSupported && isValidTargetCameras(targetCameras) && admission.targetReady;
+
+    // 3-way target camera buttons
+    const targetBtns = [
+      { id: 'btn-target-both', value: 3 },
+      { id: 'btn-target-a', value: 1 },
+      { id: 'btn-target-b', value: 2 },
+    ];
+    for (const item of targetBtns) {
+      const btn = el(item.id);
+      if (!btn) continue;
+      const isConfirmed = selectionSupported && state.status.target_cameras === item.value;
+      const isPending = Boolean(state.pendingSelect && state.pendingSelect.target_cameras === item.value);
+      btn.classList.toggle('is-active', isConfirmed);
+      btn.classList.toggle('is-pending', isPending);
+      btn.setAttribute('aria-pressed', isConfirmed ? 'true' : 'false');
+      btn.disabled = !state.connected || !selectionSupported || Boolean(state.pendingSelect || pendingStart || phase !== 'idle');
+    }
 
     if (phaseBadge) {
-      if (phase === 'stopping' || phase === 'closing') {
+      if (phase === 'stopping' || phase === 'closing' || pendingStart?.cancelRequested) {
         setTextIfChanged(phaseBadge, '状态：正在停止');
         phaseBadge.dataset.state = 'warn';
-      } else if (anyCamRecording) {
+      } else if (anyCamRecording && isTakeActive) {
         setTextIfChanged(phaseBadge, '状态：正在录像');
         phaseBadge.dataset.state = 'recording';
-      } else if (phase !== 'idle') {
+      } else if (phase !== 'idle' || pendingStart) {
         setTextIfChanged(phaseBadge, '状态：等待相机状态');
         phaseBadge.dataset.state = 'warn';
-      } else {
+      } else if (!state.connected) {
+        setTextIfChanged(phaseBadge, '状态：未连接');
+        phaseBadge.dataset.state = 'disconnected';
+      } else if (!selectionSupported) {
+        setTextIfChanged(phaseBadge, '状态：需升级固件');
+        phaseBadge.dataset.state = 'warn';
+      } else if (anyConnectedRecording) {
+        setTextIfChanged(phaseBadge, '状态：相机录像中');
+        phaseBadge.dataset.state = 'recording';
+      } else if (anySelectedStale) {
+        setTextIfChanged(phaseBadge, '状态：等待相机状态');
+        phaseBadge.dataset.state = 'stale';
+      } else if (selectedReady) {
         setTextIfChanged(phaseBadge, '状态：待机');
-        phaseBadge.dataset.state = !state.connected
-          ? 'disconnected'
-          : anyCamStale
-            ? 'stale'
-            : allCamsReady
-              ? 'ready'
-              : 'warn';
+        phaseBadge.dataset.state = 'ready';
+      } else {
+        setTextIfChanged(phaseBadge, '状态：请检查相机');
+        phaseBadge.dataset.state = 'warn';
       }
     }
 
@@ -1354,7 +1721,18 @@ export function createApp({
     }
 
     if (btnRecordMain) {
-      const desiredMode = phase === 'idle' ? 'start' : 'stop';
+      const desiredMode = (phase === 'idle' && !pendingStart && !(state.status.active_take_id > 0) && !anyConnectedRecording)
+        ? 'start'
+        : 'stop';
+      btnRecordMain.disabled = !state.connected ||
+        Boolean(pendingStop || pendingStart?.cancelRequested) ||
+        (desiredMode === 'start' && (
+          !selectionSupported ||
+          !state.status.project_id ||
+          !state.status.action_id ||
+          Boolean(state.pendingSelect) ||
+          !selectedReady
+        ));
       if (btnRecordMain.dataset.mode !== desiredMode || !btnRecordLabel) {
         btnRecordMain.dataset.mode = desiredMode;
         btnRecordMain.className = desiredMode === 'start'
@@ -1372,24 +1750,51 @@ export function createApp({
     if (obsTextEl) {
       if (!state.connected) {
         setTextIfChanged(obsTextEl, '请先连接遥控器');
-      } else if (phase === 'stopping' || phase === 'closing') {
+      } else if (phase === 'stopping' || phase === 'closing' || pendingStart?.cancelRequested) {
         setTextIfChanged(obsTextEl, '正在停止录像，请稍候…');
-      } else if (anyCamRecording) {
-        const camARec = cams[0]?.connected && cams[0]?.fresh !== false && cams[0]?.recording;
-        const camBRec = cams[1]?.connected && cams[1]?.fresh !== false && cams[1]?.recording;
-        if (camARec && camBRec) {
+      } else if (anyCamRecording && isTakeActive) {
+        const camARec = Boolean(cams[0]?.connected && cams[0]?.fresh !== false && cams[0]?.recording);
+        const camBRec = Boolean(cams[1]?.connected && cams[1]?.fresh !== false && cams[1]?.recording);
+        if (activeMask === 1) {
+          setTextIfChanged(obsTextEl, camARec ? '正在录像（只拍 A 机，A机录像中）' : '正在等待 A 机开始录像…');
+        } else if (activeMask === 2) {
+          setTextIfChanged(obsTextEl, camBRec ? '正在录像（只拍 B 机，B机录像中）' : '正在等待 B 机开始录像…');
+        } else if (camARec && camBRec) {
           setTextIfChanged(obsTextEl, '正在录像（A机、B机录像中）');
         } else {
           setTextIfChanged(obsTextEl, `正在录像（${camARec ? 'A机录像中，B机等待确认' : 'B机录像中，A机等待确认'}）`);
         }
       } else if (phase !== 'idle' || state.pendingStartCommandId) {
-        setTextIfChanged(obsTextEl, anyCamStale ? '等待相机状态' : '正在等待相机开始录像…');
-      } else if (anyCamStale) {
+        const targetLabel = activeMask === 1 ? ' A 机' : activeMask === 2 ? ' B 机' : '相机';
+        setTextIfChanged(obsTextEl, anySelectedStale ? '等待相机状态' : `正在等待${targetLabel}开始录像…`);
+      } else if (!selectionSupported) {
+        setTextIfChanged(obsTextEl, '当前遥控器固件暂不支持相机选择，请先升级固件');
+      } else if (anyConnectedRecording) {
+        setTextIfChanged(obsTextEl, '检测到相机正在录像，请先停止后再开始新一段');
+      } else if (anySelectedStale) {
         setTextIfChanged(obsTextEl, '等待相机状态');
-      } else if (!allCamsReady) {
-        setTextIfChanged(obsTextEl, '请检查相机');
+      } else if (!state.status.project_id) {
+        setTextIfChanged(obsTextEl, '请先新建拍摄项目');
+      } else if (!state.status.action_id) {
+        setTextIfChanged(obsTextEl, '请先选择当前拍摄内容');
+      } else if (state.pendingSelect) {
+        setTextIfChanged(obsTextEl, '正在保存动作与相机设置，请稍候…');
+      } else if (!selectedReady) {
+        const aReady = Boolean(admission.readyMask & 1);
+        const bReady = Boolean(admission.readyMask & 2);
+        if (effectiveTarget === 3 && !aReady && bReady) {
+          setTextIfChanged(obsTextEl, 'A 机未就绪，请检查 A 机或改选“只拍 B 机”');
+        } else if (effectiveTarget === 3 && aReady && !bReady) {
+          setTextIfChanged(obsTextEl, 'B 机未就绪，请检查 B 机或改选“只拍 A 机”');
+        } else if (effectiveTarget === 1) {
+          setTextIfChanged(obsTextEl, 'A 机未就绪，请检查 A 机连接与模式');
+        } else if (effectiveTarget === 2) {
+          setTextIfChanged(obsTextEl, 'B 机未就绪，请检查 B 机连接与模式');
+        } else {
+          setTextIfChanged(obsTextEl, '请检查相机');
+        }
       } else {
-        setTextIfChanged(obsTextEl, '已就绪，可以开始录像');
+        setTextIfChanged(obsTextEl, `已就绪（${describeTargetCameras(effectiveTarget)}），可以开始录像`);
       }
     }
   }
@@ -1551,10 +1956,14 @@ export function createApp({
       const headerRight = doc.createElement('div');
       headerRight.style.display = 'flex';
       headerRight.style.gap = '6px';
+      headerRight.style.flexWrap = 'wrap';
+      const participantsBadge = doc.createElement('span');
+      participantsBadge.className = 'badge';
       const discardBadge = doc.createElement('span');
       discardBadge.className = 'badge';
       const endBadge = doc.createElement('span');
       endBadge.className = 'badge';
+      headerRight.appendChild(participantsBadge);
       headerRight.appendChild(discardBadge);
       headerRight.appendChild(endBadge);
 
@@ -1636,6 +2045,7 @@ export function createApp({
         itemEl,
         idSpan,
         attrSpan,
+        participantsBadge,
         discardBadge,
         endBadge,
         camASpan,
@@ -1713,6 +2123,26 @@ export function createApp({
 
   function render() {
     const receiptStale = isReceiptStale();
+    const desktopMode = isDesktopLayout();
+    state.desktopMode = desktopMode;
+
+    // View panels & bottom navigation
+    for (const viewKey of ['shoot', 'list', 'records']) {
+      const panelEl = el(`view-${viewKey}`);
+      if (panelEl) {
+        panelEl.hidden = desktopMode ? false : (state.activeView !== viewKey);
+      }
+      const navBtn = el(`nav-btn-${viewKey}`);
+      if (navBtn) {
+        const isActive = state.activeView === viewKey;
+        navBtn.classList.toggle('is-active', isActive);
+        navBtn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      }
+    }
+    const bottomNavEl = el('bottom-view-nav');
+    if (bottomNavEl) {
+      bottomNavEl.hidden = desktopMode;
+    }
 
     // Card 1: Connection & Project / Template
     const connBadge = el('conn-badge');
@@ -1730,6 +2160,17 @@ export function createApp({
       } else {
         connBadge.dataset.state = 'disconnected';
         setTextIfChanged(connBadgeText, '未连接');
+      }
+    }
+
+    const topbarProjSummary = el('topbar-project-summary');
+    if (topbarProjSummary) {
+      if (!state.connected) {
+        setTextIfChanged(topbarProjSummary, '请先连接遥控器');
+      } else if (!state.status.project_id) {
+        setTextIfChanged(topbarProjSummary, '尚未新建拍摄项目');
+      } else {
+        setTextIfChanged(topbarProjSummary, `项目 ${state.status.project_id} · 已拍 ${state.status.take_id ?? 0} 段`);
       }
     }
 
@@ -1763,17 +2204,34 @@ export function createApp({
       state.connected ? '断开遥控器' : state.connecting ? '正在连接…' : '连接遥控器'
     );
 
+    const syncDisabled = !state.connected || state.syncingLog || !state.status.project_id;
     const btnSync = el('btn-sync-log');
     if (btnSync) {
-      btnSync.disabled = !state.connected || state.syncingLog || !state.status.project_id;
+      btnSync.disabled = syncDisabled;
+    }
+    const btnRecordsSync = el('btn-records-sync');
+    if (btnRecordsSync) {
+      btnRecordsSync.disabled = syncDisabled;
     }
 
-    // Empty project vs Non-empty project notice
+    // Empty project vs Non-empty project notice & on-demand setup card visibility
     const isProjectEmpty = state.status.project_id === '' && (state.status.take_id ?? 0) === 0 && state.status.phase === 'idle';
     const initBox = el('init-project-box');
     const usbNotice = el('usb-reset-notice');
     if (initBox) initBox.hidden = !state.connected || !isProjectEmpty;
     if (usbNotice) usbNotice.hidden = isProjectEmpty;
+
+    const mustShowSetupCard = !state.connected || state.connecting || isProjectEmpty;
+    const cardConnEl = el('card-connection');
+    if (cardConnEl) {
+      cardConnEl.hidden = !mustShowSetupCard && !state.settingsExpanded;
+    }
+    const btnToggleSettings = el('btn-toggle-settings');
+    if (btnToggleSettings) {
+      const isExpanded = mustShowSetupCard || state.settingsExpanded;
+      btnToggleSettings.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+      btnToggleSettings.classList.toggle('is-active', isExpanded);
+    }
 
     // Card 2 & Card 3: Camera A & Camera B
     renderCameraCard('cam-a', state.status.cameras?.[0], receiptStale);
@@ -1814,6 +2272,16 @@ export function createApp({
         ? confirmedAction.name
         : (state.status.action_id ? `清单中没有 ${state.status.action_id}，请检查所选清单` : '请从拍摄清单中选择一项')
     );
+
+    const listSelectedSummary = el('list-selected-summary');
+    if (listSelectedSummary) {
+      setTextIfChanged(
+        listSelectedSummary,
+        confirmedAction
+          ? `当前动作：${confirmedAction.action_id} ${confirmedAction.name}`
+          : (state.status.action_id ? `当前动作：${state.status.action_id}` : '当前动作：未选择')
+      );
+    }
 
     const pendingBadgeEl = el('action-pending-badge');
     if (pendingBadgeEl) {
@@ -1872,7 +2340,12 @@ export function createApp({
           );
           btn.classList.toggle('is-active', isCurrent);
           btn.setAttribute('aria-pressed', isCurrent ? 'true' : 'false');
-          btn.disabled = Boolean(state.pendingSelect);
+          btn.disabled = Boolean(
+            !state.status.selectionSupported ||
+            state.pendingSelect ||
+            pendingStart ||
+            state.status.phase !== 'idle'
+          );
           setTextIfChanged(
             btn,
             isPendingThis
@@ -1885,8 +2358,14 @@ export function createApp({
 
     const btnPrev = el('btn-prev-action');
     const btnNext = el('btn-next-action');
-    if (btnPrev) btnPrev.disabled = Boolean(state.pendingSelect) || state.template.actions.length === 0;
-    if (btnNext) btnNext.disabled = Boolean(state.pendingSelect) || state.template.actions.length === 0;
+    const actionSwitchBlocked = Boolean(
+      !state.status.selectionSupported ||
+      state.pendingSelect ||
+      pendingStart ||
+      state.status.phase !== 'idle'
+    );
+    if (btnPrev) btnPrev.disabled = actionSwitchBlocked || state.template.actions.length === 0;
+    if (btnNext) btnNext.disabled = actionSwitchBlocked || state.template.actions.length === 0;
     setTextIfChanged(el('btn-prev-label'), state.pendingSelect ? '正在切换…' : '上一项');
     setTextIfChanged(el('btn-next-label'), state.pendingSelect ? '正在切换…' : '下一项');
 
@@ -1983,7 +2462,7 @@ export function createApp({
           entry.rowBtn.classList.toggle('is-confirmed', isConfirmed);
           entry.rowBtn.classList.toggle('is-pending', isPending);
           entry.rowBtn.dataset.actionId = item.action_id;
-          entry.rowBtn.disabled = Boolean(state.pendingSelect);
+          entry.rowBtn.disabled = actionSwitchBlocked;
 
           setTextIfChanged(entry.idSpan, item.action_id);
           setTextIfChanged(entry.titleSpan, item.name);
@@ -2000,12 +2479,31 @@ export function createApp({
       }
     }
 
-    // Card 6: Dual-Camera Record Control & Recent Takes
+    // Card 6: Record Control & Recent Takes
     renderRecordStatusHeader(receiptStale);
 
     const takesDesc = [...state.ledger.takes].sort((a, b) => b.take_id - a.take_id);
     const validTotal = state.ledger.takes.filter(t => !t.discarded).length;
     setTextIfChanged(el('takes-count-badge'), `保留 ${validTotal} / 共 ${state.ledger.takes.length} 段`);
+
+    const recentTakeSummaryEl = el('recent-take-summary');
+    if (recentTakeSummaryEl) {
+      if (takesDesc.length === 0) {
+        setTextIfChanged(recentTakeSummaryEl, '最近一段：还没有拍摄记录');
+      } else {
+        const latest = takesDesc[0];
+        const latestTargetLabel = isValidTargetCameras(latest.participants)
+          ? describeTargetCameras(latest.participants)
+          : '未记录相机';
+        const latestStateLabel = latest.discarded
+          ? '不使用'
+          : (latest.ended ? (latest.complete ? '已拍完' : '有异常') : '尚未结束');
+        setTextIfChanged(
+          recentTakeSummaryEl,
+          `最近：第 ${latest.take_id} 段 · ${latest.action_id || '未指定'} · ${latestTargetLabel} · ${latestStateLabel}`
+        );
+      }
+    }
 
     const takesListEl = el('recent-takes-list');
     if (takesListEl) {
@@ -2021,6 +2519,7 @@ export function createApp({
         for (const take of takesDesc) {
           const entry = getOrCreateTakeItem(take);
           entry.itemEl.classList.toggle('is-discarded', Boolean(take.discarded));
+          entry.itemEl.dataset.participants = String(take.participants || 0);
 
           const tplAction = state.template.actions.find(a => a.action_id === take.action_id);
           const actionLabel = tplAction ? `${take.action_id} ${tplAction.name}` : (take.action_id || '尚未选择拍摄内容');
@@ -2033,6 +2532,13 @@ export function createApp({
           entry.attrSpan.dataset.takeAction = take.action_id || '';
           setTextIfChanged(entry.attrSpan, `${actionLabel}${pointLabel}${reassignHint}`);
 
+          entry.participantsBadge.dataset.takeParticipants = String(take.participants || 0);
+          entry.participantsBadge.dataset.state = isValidTargetCameras(take.participants) ? 'ready' : 'disconnected';
+          setTextIfChanged(
+            entry.participantsBadge,
+            isValidTargetCameras(take.participants) ? describeTargetCameras(take.participants) : '未记录相机'
+          );
+
           entry.discardBadge.dataset.state = take.discarded ? 'error' : 'ready';
           setTextIfChanged(entry.discardBadge, take.discarded ? '不使用' : '保留');
           setTextIfChanged(
@@ -2042,12 +2548,8 @@ export function createApp({
 
           const camA = take.cameras?.[0];
           const camB = take.cameras?.[1];
-          const camASummary = camA
-            ? `相机A：${camA.seen_recording ? '已观察到录像' : '未确认开始录像'}，${camA.stop_confirmed ? '已停止' : '未确认停止'}`
-            : '相机A：等待拍摄结果';
-          const camBSummary = camB
-            ? `相机B：${camB.seen_recording ? '已观察到录像' : '未确认开始录像'}，${camB.stop_confirmed ? '已停止' : '未确认停止'}`
-            : '相机B：等待拍摄结果';
+          const camASummary = formatTakeCameraSummary(camA, 'A', take.participants, 0);
+          const camBSummary = formatTakeCameraSummary(camB, 'B', take.participants, 1);
 
           setTextIfChanged(entry.camASpan, camASummary);
           setTextIfChanged(entry.camBSpan, camBSummary);
@@ -2191,6 +2693,11 @@ export function createApp({
       });
       state.status.project_id = reply.project_id ?? projectId;
       state.status.template_id = reply.template_id ?? templateId;
+      const validTarget = isValidTargetCameras(reply.target_cameras);
+      state.status.target_cameras = validTarget ? reply.target_cameras : null;
+      state.status.selectionSupported = state.status.selectionSupported && validTarget;
+      state.status.active_participants = state.status.selectionSupported ? 0 : null;
+      state.settingsExpanded = false;
       if (Number.isSafeInteger(reply.event_seq)) state.status.event_seq = reply.event_seq;
       if (Number.isSafeInteger(reply.take_id)) state.status.take_id = reply.take_id;
       refreshLocalLedger(state.status.project_id);
@@ -2203,9 +2710,9 @@ export function createApp({
     }
   }
 
-  async function selectAction(actionId, pointId = '') {
-    // Recording guard: strictly block switching action when not idle!
-    if (state.status.phase !== 'idle') {
+  async function selectAction(actionId, pointId = '', targetCameras = state.status.target_cameras) {
+    // Recording guard: strictly block switching action or camera target when not idle!
+    if (state.status.phase !== 'idle' || pendingStart) {
       setBanner('保存动作失败：请先停止录像。拍完的片段可通过“修改拍摄内容”更正。', {
         tone: 'error',
         code: 'recording_active',
@@ -2213,10 +2720,34 @@ export function createApp({
       render();
       return null;
     }
+    if (state.connected && state.lastStatusReceivedAt > 0 && state.status.selectionSupported === false) {
+      setBanner('保存动作失败：当前遥控器固件暂不支持相机选择，请先升级遥控器固件。', {
+        tone: 'error',
+        code: 'unsupported_firmware',
+      });
+      render();
+      return null;
+    }
     if (state.pendingSelect) return null;
     if (!actionId) return null;
 
-    state.pendingSelect = { action_id: actionId, point_id: pointId ?? '' };
+    const requestedTarget = targetCameras !== undefined && targetCameras !== null
+      ? targetCameras
+      : (isValidTargetCameras(state.status.target_cameras) ? state.status.target_cameras : 3);
+    if (!isValidTargetCameras(requestedTarget)) {
+      setBanner('保存动作失败：请选择有效的拍摄相机（双机、只拍 A 机或只拍 B 机）。', {
+        tone: 'error',
+        code: 'invalid_request',
+      });
+      render();
+      return null;
+    }
+
+    state.pendingSelect = {
+      action_id: actionId,
+      point_id: pointId ?? '',
+      target_cameras: requestedTarget,
+    };
     setBanner('正在保存动作，请稍候', {
       tone: 'busy',
     });
@@ -2228,14 +2759,19 @@ export function createApp({
         project_id: state.status.project_id,
         action_id: actionId,
         point_id: pointId ?? '',
+        target_cameras: requestedTarget,
       });
       if (!reply || reply.ok !== true) {
         throw new BleClientError(reply?.error || 'request_rejected', 'SELECT_ACTION rejected', { reply });
       }
-      // Update confirmed action ONLY after Promise resolves with reply.ok === true
+      if (!isValidTargetCameras(reply.target_cameras)) {
+        throw new BleClientError('invalid_select_ack', 'SELECT_ACTION reply missing valid target_cameras', { reply });
+      }
+      // Update confirmed action & target_cameras ONLY after Promise resolves with reply.ok === true and valid target_cameras
       state.pendingSelect = null;
       state.status.action_id = reply.action_id ?? actionId;
       state.status.point_id = reply.point_id ?? (pointId ?? '');
+      state.status.target_cameras = reply.target_cameras;
       if (Number.isSafeInteger(reply.event_seq)) state.status.event_seq = reply.event_seq;
       if (Number.isSafeInteger(reply.take_id)) state.status.take_id = reply.take_id;
       setBanner('已保存', {
@@ -2250,8 +2786,45 @@ export function createApp({
     }
   }
 
+  async function selectTargetCameras(targetCameras) {
+    if (state.status.phase !== 'idle' || pendingStart) {
+      setBanner('切换相机失败：请先停止录像。本段参与相机已锁定。', {
+        tone: 'error',
+        code: 'recording_active',
+      });
+      render();
+      return null;
+    }
+    if (state.connected && state.lastStatusReceivedAt > 0 && state.status.selectionSupported === false) {
+      setBanner('切换相机失败：当前遥控器固件暂不支持相机选择，请先升级遥控器固件。', {
+        tone: 'error',
+        code: 'unsupported_firmware',
+      });
+      render();
+      return null;
+    }
+    if (state.pendingSelect) return null;
+    if (!state.status.action_id) {
+      setBanner('切换相机失败：请先选择当前拍摄内容。', {
+        tone: 'error',
+        code: 'no_action_selected',
+      });
+      render();
+      return null;
+    }
+    if (!isValidTargetCameras(targetCameras)) {
+      setBanner('切换相机失败：请选择双机、只拍 A 机或只拍 B 机。', {
+        tone: 'error',
+        code: 'invalid_request',
+      });
+      render();
+      return null;
+    }
+    return selectAction(state.status.action_id, state.status.point_id || '', targetCameras);
+  }
+
   function stepAction(direction = 1) {
-    if (state.status.phase !== 'idle') {
+    if (state.status.phase !== 'idle' || pendingStart) {
       setBanner('请先停止录像。拍完的片段可通过“修改拍摄内容”更正。', {
         tone: 'error',
         code: 'recording_active',
@@ -2271,73 +2844,145 @@ export function createApp({
       targetIdx = (currentIdx + direction + candidates.length) % candidates.length;
     }
     const target = candidates[targetIdx];
-    return selectAction(target.action_id, '');
+    return selectAction(target.action_id, '', state.status.target_cameras);
   }
 
   async function startRecording() {
-    if (state.status.phase !== 'idle') return null;
+    if (state.status.phase !== 'idle' || pendingStart || pendingStop || state.pendingSelect) return null;
+    if (state.status.selectionSupported === false || !isValidTargetCameras(state.status.target_cameras)) {
+      setBanner('开始录像失败：当前遥控器固件暂不支持相机选择，请先升级遥控器固件。', {
+        tone: 'error',
+        code: 'unsupported_firmware',
+      });
+      render();
+      return null;
+    }
     const commandId = createCommandId(now());
+    const context = {
+      projectId: state.status.project_id,
+      targetCameras: state.status.target_cameras,
+      connection: connectionVersion,
+      statusVersion,
+      cancelRequested: false,
+    };
+    context.finished = new Promise(resolve => { context.finish = resolve; });
+    pendingStart = context;
     state.pendingStartCommandId = commandId;
     setBanner('正在通知相机开始录像…', { tone: 'busy', code: 'START' });
     render();
     try {
       const reply = await client.request({
         cmd: 'START',
-        project_id: state.status.project_id,
+        project_id: context.projectId,
         command_id: commandId,
+        target_cameras: context.targetCameras,
       });
-      if (Number.isSafeInteger(reply?.take_id)) {
-        state.status.take_id = reply.take_id;
-        state.status.active_take_id = reply.active_take_id ?? reply.take_id;
+      if (connectionVersion !== context.connection || state.status.project_id !== context.projectId) return null;
+      if (reply?.ok !== true) {
+        throw new BleClientError(reply?.error || 'request_rejected', 'START rejected', { reply });
       }
-      if (Number.isSafeInteger(reply?.event_seq)) {
-        state.status.event_seq = reply.event_seq;
+      const newerStatus = statusVersion !== context.statusVersion &&
+        state.status.event_seq >= (reply.event_seq ?? 0);
+      if (Number.isSafeInteger(reply.take_id)) {
+        state.status.take_id = Math.max(state.status.take_id, reply.take_id);
+        if (!newerStatus) state.status.active_take_id = reply.active_take_id ?? reply.take_id;
       }
-      if (typeof reply?.phase === 'string') {
-        state.status.phase = reply.phase;
-      } else if (state.status.phase === 'idle') {
-        state.status.phase = 'starting';
+      if (Number.isSafeInteger(reply.event_seq)) {
+        state.status.event_seq = Math.max(state.status.event_seq, reply.event_seq);
       }
-      setBanner('开始请求已收到，正在等待相机确认录像', {
-        tone: 'warn',
-        code: 'START_ACK',
-      });
+      if (!newerStatus) {
+        state.status.phase = reply.phase || 'starting';
+        if (isValidTargetCameras(reply.target_cameras)) {
+          state.status.target_cameras = reply.target_cameras;
+        }
+        if (isValidActiveParticipants(reply.active_participants)) {
+          state.status.active_participants = reply.active_participants;
+        } else if (state.status.phase !== 'idle') {
+          state.status.active_participants = context.targetCameras;
+        }
+      }
+      pendingStart = null;
+      state.pendingStartCommandId = null;
+      if (context.cancelRequested) {
+        // Wait for the admitted take ID rather than stopping an older take or
+        // sending an unbound STOP while START is still in flight.
+        if (!newerStatus || state.status.phase !== 'idle') await stopRecording();
+      } else if (!newerStatus) {
+        setBanner('开始请求已收到，正在等待相机确认录像', {
+          tone: 'warn',
+          code: 'START_ACK',
+        });
+      }
       render();
       return reply;
     } catch (error) {
-      state.pendingStartCommandId = null;
-      handleError('开始录像', error);
+      if (connectionVersion === context.connection && state.status.project_id === context.projectId) {
+        handleError('开始录像', error);
+      }
       return null;
+    } finally {
+      if (pendingStart === context) {
+        pendingStart = null;
+        state.pendingStartCommandId = null;
+      }
+      context.finish();
+      render();
     }
   }
 
   async function stopRecording() {
-    const targetTakeId = state.status.active_take_id || state.status.take_id;
-    setBanner('正在通知相机停止录像…', { tone: 'busy', code: 'STOP' });
-    render();
-    try {
-      const reply = await client.request({
-        cmd: 'STOP',
-        project_id: state.status.project_id,
-        take_id: targetTakeId,
-      });
-      state.pendingStartCommandId = null;
-      if (typeof reply?.phase === 'string') {
-        state.status.phase = reply.phase;
-      } else {
-        state.status.phase = 'idle';
-        state.status.active_take_id = 0;
-      }
-      if (Number.isSafeInteger(reply?.event_seq)) {
-        state.status.event_seq = reply.event_seq;
-      }
-      setBanner('停止请求已收到，请查看相机是否已停止', { tone: 'ok', code: 'STOP_ACK' });
+    if (pendingStart) {
+      pendingStart.cancelRequested = true;
+      setBanner('已请求停止，正在等待遥控器确认本段编号…', { tone: 'busy' });
       render();
-      return reply;
-    } catch (error) {
-      handleError('停止录像', error);
-      return null;
+      return pendingStart.finished;
     }
+    if (pendingStop) return pendingStop;
+    const targetTakeId = state.status.active_take_id || state.status.take_id;
+    const projectId = state.status.project_id;
+    const connection = connectionVersion;
+    const version = statusVersion;
+    state.status.phase = 'stopping';
+    setBanner('正在通知相机停止录像…', { tone: 'busy', code: 'STOP' });
+    const operation = Promise.resolve().then(async () => {
+      try {
+        const reply = await client.request({
+          cmd: 'STOP',
+          project_id: projectId,
+          take_id: targetTakeId,
+        });
+        if (connectionVersion !== connection || state.status.project_id !== projectId) return null;
+        if (reply?.ok !== true) {
+          throw new BleClientError(reply?.error || 'request_rejected', 'STOP rejected', { reply });
+        }
+        state.pendingStartCommandId = null;
+        const newerStatus = statusVersion !== version &&
+          state.status.event_seq >= (reply.event_seq ?? 0);
+        if (!newerStatus && typeof reply.phase === 'string') {
+          state.status.phase = reply.phase;
+          if (reply.phase === 'idle') {
+            state.status.active_take_id = 0;
+            if (state.status.selectionSupported) state.status.active_participants = 0;
+          }
+        }
+        if (Number.isSafeInteger(reply.event_seq)) {
+          state.status.event_seq = Math.max(state.status.event_seq, reply.event_seq);
+        }
+        setBanner('停止请求已收到，请查看相机是否已停止', { tone: 'ok', code: 'STOP_ACK' });
+        return reply;
+      } catch (error) {
+        if (connectionVersion === connection && state.status.project_id === projectId) {
+          handleError('停止录像', error);
+        }
+        return null;
+      } finally {
+        pendingStop = null;
+        render();
+      }
+    });
+    pendingStop = operation;
+    render();
+    return operation;
   }
 
   async function markDiscard(takeId, discard) {
@@ -2531,6 +3176,74 @@ export function createApp({
 
   // === Bind DOM Events ===
 
+  const btnToggleSettings = el('btn-toggle-settings');
+  if (btnToggleSettings) {
+    btnToggleSettings.addEventListener('click', () => {
+      state.settingsExpanded = !state.settingsExpanded;
+      if (state.settingsExpanded && state.activeView !== 'shoot') {
+        switchView('shoot');
+      } else {
+        render();
+      }
+    });
+  }
+
+  for (const navEl of root.querySelectorAll('[data-view-nav]')) {
+    navEl.addEventListener('click', () => {
+      const targetView = navEl.dataset.viewNav;
+      if (targetView) switchView(targetView);
+    });
+  }
+
+  const btnOpenActionList = el('btn-open-action-list');
+  if (btnOpenActionList) {
+    btnOpenActionList.addEventListener('click', () => {
+      switchView('list');
+    });
+  }
+
+  const btnListBackShoot = el('btn-list-back-shoot');
+  if (btnListBackShoot) {
+    btnListBackShoot.addEventListener('click', () => {
+      switchView('shoot');
+    });
+  }
+
+  const btnAfterSelectReturn = el('btn-after-select-return');
+  if (btnAfterSelectReturn) {
+    btnAfterSelectReturn.addEventListener('click', () => {
+      switchView('shoot');
+    });
+  }
+
+  const btnOpenRecords = el('btn-open-records');
+  if (btnOpenRecords) {
+    btnOpenRecords.addEventListener('click', () => {
+      switchView('records');
+    });
+  }
+
+  const btnRecordsBackShoot = el('btn-records-back-shoot');
+  if (btnRecordsBackShoot) {
+    btnRecordsBackShoot.addEventListener('click', () => {
+      switchView('shoot');
+    });
+  }
+
+  const btnRecordsSync = el('btn-records-sync');
+  if (btnRecordsSync) {
+    btnRecordsSync.addEventListener('click', () => {
+      void syncCurrentProject(state.status.project_id);
+    });
+  }
+
+  for (const camBtn of root.querySelectorAll('[data-target-cameras]')) {
+    camBtn.addEventListener('click', () => {
+      const val = Number(camBtn.dataset.targetCameras);
+      void selectTargetCameras(val);
+    });
+  }
+
   const btnConnect = el('btn-connect');
   if (btnConnect) {
     btnConnect.addEventListener('click', () => {
@@ -2619,7 +3332,7 @@ export function createApp({
   const btnRecordMain = el('btn-record-main');
   if (btnRecordMain) {
     btnRecordMain.addEventListener('click', () => {
-      if (state.status.phase === 'idle') {
+      if (el('btn-record-main')?.dataset.mode === 'start') {
         void startRecording();
       } else {
         void stopRecording();
@@ -2667,6 +3380,11 @@ export function createApp({
     doc?.documentElement?.setAttribute('data-theme', savedTheme);
   }
 
+  const onWindowResize = () => {
+    render();
+  };
+  win?.addEventListener?.('resize', onWindowResize);
+
   // Periodic staleness monitor: updates only camera freshness and record status header
   const staleTimer = setInterval(() => {
     if (state.connected && state.lastStatusReceivedAt > 0) {
@@ -2688,11 +3406,13 @@ export function createApp({
     render,
     renderStalenessTick,
     setBanner,
+    switchView,
     applyStatusSnapshot,
     refreshLocalLedger,
     syncCurrentProject,
     initProject,
     selectAction,
+    selectTargetCameras,
     stepAction,
     startRecording,
     stopRecording,
@@ -2706,6 +3426,7 @@ export function createApp({
     disconnect,
     destroy() {
       clearInterval(staleTimer);
+      win?.removeEventListener?.('resize', onWindowResize);
     },
   };
 }
