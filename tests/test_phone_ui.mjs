@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import {
   createApp, createMockBleClient, createMemoryStorage,
   TEMPLATE_CACHE_KEY, ledgerEventKey, ledgerCursorKey, loadProjectLedger,
+  escapeCsvCell, exportLedgerCsv, deduceNextPointId, isValidPointId,
 } from '../phone/app.mjs';
 
 // Only browser/BLE boundaries are supplied: rendering, handlers, storage writes,
@@ -94,7 +95,7 @@ async function fixture(t, options = {}) {
     fetchImpl: async () => ({ ok: true, json: async () => structuredClone(template) }),
     now: () => clock,
     clipboard: { writeText: async text => { copies.push(text); } },
-    download: (name, text) => downloads.push({ name, text }),
+    download: (name, text, mime) => downloads.push({ name, text, mime }),
     share: null,
   });
   t.after(() => { app.destroy(); app.client.disconnect(); dom.window.close(); });
@@ -927,4 +928,473 @@ test('idle recording evidence retains a safety STOP without rewriting the comple
   await f.app.syncCurrentProject();
   assert.equal(f.client.mockState.events.length, seq);
   assert.equal(JSON.stringify(f.app.state.ledger.takes), before);
+});
+
+// === Test 25 ~ Test 34: Mobile UI Streamline & Data Integrity Tests ===
+
+test('silent auto-sync concurrency isolation (no blocking UI/START and single-flight coalescing)', async t => {
+  const f = await fixture(t);
+  await connect(f);
+  let syncCalls = 0;
+  let concurrentSyncs = 0;
+  let maxConcurrentSyncs = 0;
+  const originalSyncLog = f.client.syncLog.bind(f.client);
+  const defSync = deferred();
+  f.client.syncLog = async (afterSeq, projectId, onEvent) => {
+    syncCalls++;
+    concurrentSyncs++;
+    maxConcurrentSyncs = Math.max(maxConcurrentSyncs, concurrentSyncs);
+    try {
+      await defSync.promise;
+      return await originalSyncLog(afterSeq, projectId, onEvent);
+    } finally {
+      concurrentSyncs--;
+    }
+  };
+
+  // Trigger two concurrent silent syncs
+  const p1 = f.app.syncCurrentProject('P', { silent: true });
+  const p2 = f.app.syncCurrentProject('P', { silent: true });
+
+  assert.equal(f.app.state.syncingLog, true);
+  // Banner must NOT be overwritten with '正在更新拍摄记录…' because silent: true
+  assert.notEqual(f.q('#status-banner').textContent, '正在更新拍摄记录…');
+  // Record CTA is NOT disabled just because silent sync is running in background
+  assert.equal(f.q('#btn-record-main').disabled, false);
+
+  // Both concurrent calls return the single in-flight promise
+  assert.equal(p1, p2);
+  assert.equal(maxConcurrentSyncs, 1);
+
+  defSync.resolve();
+  await Promise.all([p1, p2]);
+
+  assert.equal(f.app.state.syncingLog, false);
+  assert.equal(maxConcurrentSyncs, 1);
+});
+
+test('point ID ASCII validation strictly rejects spaces, Chinese, symbols, empty, and excessive length', async t => {
+  const f = await fixture(t);
+  await connect(f);
+  await f.app.selectAction('D27');
+
+  f.q('#btn-trigger-add-point').click();
+  const modal = f.q('#modal-add-point');
+  assert.equal(modal.hasAttribute('open'), true);
+
+  const errorEl = f.q('#msg-add-point-error');
+  const d27 = f.app.state.template.actions.find(a => a.action_id === 'D27');
+  const initialPointsCount = d27.points.length;
+
+  const testCases = [
+    { id: 'P 01', reason: 'space' },
+    { id: '点位1', reason: 'Chinese' },
+    { id: 'P@01', reason: 'symbol' },
+    { id: '', reason: 'empty' },
+    { id: '   ', reason: 'whitespace' },
+    { id: 'P12345678901234567', reason: 'over 16 chars' },
+  ];
+
+  for (const tc of testCases) {
+    f.q('#input-add-point-id').value = tc.id;
+    f.q('#form-add-point').dispatchEvent(new f.dom.window.Event('submit', { cancelable: true }));
+    assert.equal(modal.hasAttribute('open'), true, `Modal should remain open for invalid ID: ${tc.reason}`);
+    assert.match(errorEl.textContent, /1-16 位/, `Error message should explain ASCII requirement for ${tc.reason}`);
+    assert.equal(d27.points.length, initialPointsCount);
+  }
+
+  // Valid ASCII point ID
+  f.q('#input-add-point-id').value = 'P03';
+  f.q('#input-add-point-name').value = '新加采样口';
+  f.q('#form-add-point').dispatchEvent(new f.dom.window.Event('submit', { cancelable: true }));
+  await until(() => !modal.hasAttribute('open'));
+  await until(() => f.app.state.status.point_id === 'P03');
+
+  assert.equal(d27.points.length, initialPointsCount + 1);
+  const added = d27.points.find(p => p.point_id === 'P03');
+  assert.ok(added);
+  assert.equal(added.name, '新加采样口');
+  assert.equal(f.app.state.status.point_id, 'P03');
+});
+
+test('point ID deduplication against current template action is case-insensitive', async t => {
+  const f = await fixture(t);
+  await connect(f);
+  await f.app.selectAction('D27');
+
+  f.q('#btn-trigger-add-point').click();
+  const modal = f.q('#modal-add-point');
+  const errorEl = f.q('#msg-add-point-error');
+
+  // Existing point in D27 is P1 and P2
+  f.q('#input-add-point-id').value = 'P1';
+  f.q('#form-add-point').dispatchEvent(new f.dom.window.Event('submit', { cancelable: true }));
+  assert.equal(modal.hasAttribute('open'), true);
+  assert.match(errorEl.textContent, /已存在/);
+
+  // Case-insensitive duplicate 'p1'
+  f.q('#input-add-point-id').value = 'p1';
+  f.q('#form-add-point').dispatchEvent(new f.dom.window.Event('submit', { cancelable: true }));
+  assert.equal(modal.hasAttribute('open'), true);
+  assert.match(errorEl.textContent, /已存在/);
+
+  // Non-duplicate 'P99'
+  f.q('#input-add-point-id').value = 'P99';
+  f.q('#form-add-point').dispatchEvent(new f.dom.window.Event('submit', { cancelable: true }));
+  await until(() => !modal.hasAttribute('open'));
+  const d27 = f.app.state.template.actions.find(a => a.action_id === 'D27');
+  assert.ok(d27.points.some(p => p.point_id === 'P99'));
+});
+
+test('target camera alert bar reacts to target cameras, readiness and disconnection', async t => {
+  const f = await fixture(t);
+  await connect(f);
+  const alertBar = f.q('#target-alert-bar');
+
+  // Initially dual mode (target_cameras: 3), both ready
+  assert.equal(alertBar.hidden, true);
+
+  // Dual mode: Cam A unready
+  f.client.emitStatus({
+    cameras: [
+      { connected: true, ready: false, recording: false, fresh: true, video: true, battery: 80 },
+      { connected: true, ready: true, recording: false, fresh: true, video: true, battery: 80 },
+    ],
+  });
+  assert.equal(alertBar.hidden, false);
+  assert.match(alertBar.textContent, /双机模式下 A 机 未就绪/);
+
+  // Dual mode: Cam B disconnected
+  f.client.emitStatus({
+    cameras: [
+      { connected: true, ready: true, recording: false, fresh: true, video: true, battery: 80 },
+      { connected: false, ready: false, recording: false, fresh: true, video: true, battery: 80 },
+    ],
+  });
+  assert.equal(alertBar.hidden, false);
+  assert.match(alertBar.textContent, /双机模式下 B 机 未连接/);
+
+  // Switch to single A mode (target_cameras: 1)
+  await f.app.selectTargetCameras(1);
+  // Both connected & ready
+  f.client.emitStatus({
+    target_cameras: 1,
+    cameras: [
+      { connected: true, ready: true, recording: false, fresh: true, video: true, battery: 80 },
+      { connected: true, ready: true, recording: false, fresh: true, video: true, battery: 80 },
+    ],
+  });
+  assert.equal(alertBar.hidden, false);
+  assert.match(alertBar.textContent, /注意：当前为只拍 A 机模式，B 机不参与本段录像/);
+
+  // Single A mode: Cam A disconnected
+  f.client.emitStatus({
+    target_cameras: 1,
+    cameras: [
+      { connected: false, ready: false, recording: false, fresh: true, video: true, battery: 80 },
+      { connected: true, ready: true, recording: false, fresh: true, video: true, battery: 80 },
+    ],
+  });
+  assert.equal(alertBar.hidden, false);
+  assert.match(alertBar.textContent, /只拍 A 机模式下 A 机未连接/);
+
+  // Single B mode: Cam B disconnected
+  await f.app.selectTargetCameras(2);
+  f.client.emitStatus({
+    target_cameras: 2,
+    cameras: [
+      { connected: true, ready: true, recording: false, fresh: true, video: true, battery: 80 },
+      { connected: false, ready: false, recording: false, fresh: true, video: true, battery: 80 },
+    ],
+  });
+  assert.equal(alertBar.hidden, false);
+  assert.match(alertBar.textContent, /只拍 B 机模式下 B 机未连接/);
+});
+
+test('target camera alert hides on controller disconnect', async t => {
+  const f = await fixture(t);
+  await connect(f);
+  const alertBar = f.q('#target-alert-bar');
+
+  // Trigger alert
+  f.client.emitStatus({
+    cameras: [
+      { connected: false, ready: false, recording: false, fresh: true, video: true, battery: 80 },
+      { connected: true, ready: true, recording: false, fresh: true, video: true, battery: 80 },
+    ],
+  });
+  assert.equal(alertBar.hidden, false);
+
+  // Disconnect controller
+  f.client.disconnect();
+  await until(() => !f.app.state.connected);
+  assert.equal(alertBar.hidden, true);
+  assert.equal(alertBar.textContent, '');
+});
+
+test('REASSIGN option preservation preserves orphan actions and points without resetting to defaults', async t => {
+  const orphanTakeEvents = [
+    event(1, 'TAKE_BEGIN', { take_id: 1, action_id: 'A_ORPHAN', point_id: 'P_ORPHAN',
+      command_id: 'start-001', source: 'ble', participants: 3,
+      time_anchor: { boot_id: 'boot-one', mono_ms: 900, utc_ms: 1800000000000 } }, 'P'),
+    event(2, 'TAKE_END', { take_id: 1, action_id: 'A_ORPHAN', point_id: 'P_ORPHAN',
+      begin_boot_id: 'boot-one', begin_mono_ms: 1000, complete: true,
+      reason: 'stopped', observation_lost: false,
+      cameras: [
+        { seen_recording: true, stop_confirmed: true, record_time: 5, battery: 80 },
+        { seen_recording: true, stop_confirmed: true, record_time: 5, battery: 80 },
+      ] }, 'P'),
+  ];
+  const f = await fixture(t, { events: orphanTakeEvents });
+  await connect(f);
+
+  // Navigate to records view
+  f.q('#nav-btn-records').click();
+  assert.equal(f.q('#view-records').hidden, false);
+
+  f.q('[data-action="open-reassign"]').click();
+
+  const actionSelect = f.q('[data-reassign-action-select="1"]');
+  const pointSelect = f.q('[data-reassign-point-select="1"]');
+
+  assert.equal(actionSelect.value, 'A_ORPHAN');
+  assert.equal(pointSelect.value, 'P_ORPHAN');
+
+  const actionOptions = Array.from(actionSelect.options);
+  const orphanActionOption = actionOptions.find(o => o.value === 'A_ORPHAN');
+  assert.ok(orphanActionOption);
+  assert.match(orphanActionOption.textContent, /现场保留动作·未命名/);
+
+  const pointOptions = Array.from(pointSelect.options);
+  const orphanPointOption = pointOptions.find(o => o.value === 'P_ORPHAN');
+  assert.ok(orphanPointOption);
+  assert.match(orphanPointOption.textContent, /现场保留点位·未命名/);
+
+  // Draft must not be cleared or corrupted
+  const draft = f.app.state.reassignDrafts.get(1);
+  assert.equal(draft.action_id, 'A_ORPHAN');
+  assert.equal(draft.point_id, 'P_ORPHAN');
+});
+
+test('reverse harvesting engine automatically imports unrecorded point_id from historical takes', async t => {
+  const harvestEvents = [
+    event(1, 'TAKE_BEGIN', { take_id: 1, action_id: 'D27', point_id: 'P_HARVEST',
+      command_id: 'start-001', source: 'ble', participants: 3,
+      time_anchor: { boot_id: 'boot-one', mono_ms: 900, utc_ms: 1800000000000 } }, 'P'),
+    event(2, 'TAKE_END', { take_id: 1, action_id: 'D27', point_id: 'P_HARVEST',
+      begin_boot_id: 'boot-one', begin_mono_ms: 1000, complete: true,
+      reason: 'stopped', observation_lost: false,
+      cameras: [
+        { seen_recording: true, stop_confirmed: true, record_time: 5, battery: 80 },
+        { seen_recording: true, stop_confirmed: true, record_time: 5, battery: 80 },
+      ] }, 'P'),
+  ];
+  const f = await fixture(t, { events: harvestEvents });
+  await connect(f);
+
+  const d27 = f.app.state.template.actions.find(a => a.action_id === 'D27');
+  const harvestedPoint = d27.points.find(p => p.point_id === 'P_HARVEST');
+  assert.ok(harvestedPoint, 'Point P_HARVEST should have been harvested into D27');
+  assert.equal(harvestedPoint.orphan, true);
+
+  // Select D27 and check point pills
+  await f.app.selectAction('D27');
+  const pillBtn = f.q('#point-pills [data-point-id="P_HARVEST"]');
+  assert.ok(pillBtn, 'Pill button for P_HARVEST should exist in DOM');
+
+  // Pill click selects the harvested point
+  pillBtn.click();
+  await until(() => f.app.state.status.point_id === 'P_HARVEST');
+  assert.equal(f.app.state.status.point_id, 'P_HARVEST');
+});
+
+test('wakeLock acquisition and release cycles with recording phase and recovers on visibilitychange', async t => {
+  const f = await fixture(t);
+  let lockRequested = 0;
+  let lockReleased = 0;
+  let activeSentinel = null;
+
+  f.dom.window.navigator.wakeLock = {
+    request: async (type) => {
+      assert.equal(type, 'screen');
+      lockRequested++;
+      const listeners = [];
+      const sentinel = {
+        released: false,
+        release: async () => {
+          if (!sentinel.released) {
+            sentinel.released = true;
+            lockReleased++;
+            listeners.forEach(cb => cb());
+          }
+        },
+        addEventListener: (event, cb) => {
+          if (event === 'release') listeners.push(cb);
+        },
+      };
+      activeSentinel = sentinel;
+      return sentinel;
+    },
+  };
+
+  await connect(f);
+  await f.app.selectAction('S01');
+
+  // Start recording
+  await f.app.startRecording();
+  f.client.confirmRecording();
+  await until(() => f.app.state.status.phase === 'recording');
+  assert.equal(lockRequested, 1);
+  assert.equal(lockReleased, 0);
+
+  // Simulate tab switching: browser releases lock when hidden
+  Object.defineProperty(f.dom.window.document, 'visibilityState', {
+    value: 'hidden',
+    configurable: true,
+  });
+  await activeSentinel.release();
+  assert.equal(lockReleased, 1);
+
+  // Simulate returning to tab: visibilityState becomes visible while recording
+  Object.defineProperty(f.dom.window.document, 'visibilityState', {
+    value: 'visible',
+    configurable: true,
+  });
+  f.dom.window.document.dispatchEvent(new f.dom.window.Event('visibilitychange'));
+  await until(() => lockRequested >= 2);
+  assert.equal(lockRequested, 2, 'WakeLock should be re-acquired on tab becoming visible while recording');
+
+  // Stop recording
+  await f.app.stopRecording();
+  f.client.emitStatus({
+    phase: 'idle',
+    active_take_id: 0,
+    cameras: f.client.mockState.cameras.map(c => ({ ...c, recording: false, ready: true })),
+  });
+  await until(() => f.app.state.status.phase === 'idle');
+  assert.equal(lockReleased, 2, 'WakeLock should be released upon stopping recording');
+});
+
+test('IME composition guard blocks Enter key and form submit during active composition', async t => {
+  const f = await fixture(t);
+  await connect(f);
+  await f.app.selectAction('D27');
+
+  f.q('#btn-trigger-add-point').click();
+  const modal = f.q('#modal-add-point');
+  const inputId = f.q('#input-add-point-id');
+  const inputName = f.q('#input-add-point-name');
+  const form = f.q('#form-add-point');
+
+  inputId.value = 'P08';
+  inputName.value = 'ce';
+
+  // Start IME composition (e.g. typing pinyin)
+  inputName.dispatchEvent(new f.dom.window.Event('compositionstart'));
+
+  // Press Enter key while composing
+  const enterEvent = new f.dom.window.KeyboardEvent('keydown', { key: 'Enter', cancelable: true });
+  inputName.dispatchEvent(enterEvent);
+  assert.equal(enterEvent.defaultPrevented, true, 'Enter key default should be prevented during composition');
+
+  // Attempt form submission while composing
+  form.dispatchEvent(new f.dom.window.Event('submit', { cancelable: true }));
+  assert.equal(modal.hasAttribute('open'), true, 'Modal must not close during active IME composition');
+
+  const d27 = f.app.state.template.actions.find(a => a.action_id === 'D27');
+  assert.equal(d27.points.some(p => p.point_id === 'P08'), false, 'Point must not be created during composition');
+
+  // End IME composition
+  inputName.dispatchEvent(new f.dom.window.Event('compositionend'));
+  inputName.value = '测';
+
+  // Now submit form
+  form.dispatchEvent(new f.dom.window.Event('submit', { cancelable: true }));
+  await until(() => !modal.hasAttribute('open'));
+
+  assert.equal(d27.points.some(p => p.point_id === 'P08'), true);
+  assert.equal(d27.points.find(p => p.point_id === 'P08').name, '测');
+});
+
+test('RFC 4180 + UTF-8 BOM + CWE-1236 CSV export sanitizes formulas, whitespace, and handles edge cases', async t => {
+  // Unit test escapeCsvCell
+  assert.equal(escapeCsvCell('Simple'), '"Simple"');
+  assert.equal(escapeCsvCell('Hello, World'), '"Hello, World"');
+  assert.equal(escapeCsvCell('He said "quote"'), '"He said ""quote"""');
+  assert.equal(escapeCsvCell(null), '""');
+  assert.equal(escapeCsvCell(undefined), '""');
+
+  // CWE-1236 Formula injection defenses
+  assert.equal(escapeCsvCell('=1+1'), '"\'=1+1"');
+  assert.equal(escapeCsvCell('+SUM(A1:A10)'), '"\'+SUM(A1:A10)"');
+  assert.equal(escapeCsvCell('-100'), '"\'-100"');
+  assert.equal(escapeCsvCell('@HYPERLINK("http://attacker.com")'), '"\'@HYPERLINK(""http://attacker.com"")"');
+  assert.equal(escapeCsvCell('\tcmd'), '"\'\tcmd"');
+  assert.equal(escapeCsvCell('|dir'), '"\'|dir"');
+
+  // Multiline & whitespace leading injection
+  assert.equal(escapeCsvCell('\r\n=1+1'), '"\'=1+1"');
+  assert.equal(escapeCsvCell('   =2+2   '), '"\'=2+2"');
+
+  // Export full ledger CSV
+  const fakeLedger = {
+    project_id: 'TEST_PROJ',
+    takes: [
+      {
+        take_id: 1,
+        action_id: 'S01',
+        point_id: 'P01',
+        participants: 3,
+        complete: true,
+        discarded: false,
+        reason: 'normal',
+        time_anchor: { utc_ms: 1800000000000 },
+        begin_mono_ms: 1000,
+        end_mono_ms: 6000,
+        cameras: [
+          { seen_recording: true, battery: 85 },
+          { seen_recording: true, battery: 82 },
+        ],
+      },
+      {
+        take_id: 2,
+        action_id: 'S01',
+        point_id: '=MALICIOUS',
+        participants: 1,
+        complete: false,
+        discarded: true,
+        reason: 'aborted\r\nline2',
+        time_anchor: { utc_ms: NaN }, // Invalid timestamp edge case
+        cameras: [],
+      },
+    ],
+  };
+
+  const csv = exportLedgerCsv(fakeLedger, template);
+  // UTF-8 BOM assertion
+  assert.equal(csv.charCodeAt(0), 0xFEFF, 'CSV must start with UTF-8 BOM 0xFEFF');
+  assert.ok(csv.startsWith('\uFEFF"take_id","action_id"'));
+
+  const lines = csv.slice(1).split('\r\n');
+  assert.equal(lines.length, 3); // Header + 2 rows
+
+  // Row 1 assertions
+  assert.match(lines[1], /^"1","S01","静态检查","P01","P01 \(现场点位\)","双机同拍","是","保留","normal","2027-01-15T08:00:00.000Z","5.0","已录制","85","已录制","82"$/);
+
+  // Row 2 assertions: formula injection neutralized, line breaks stripped, NaN timestamp produces empty string
+  assert.match(lines[2], /^"2","S01","静态检查","'=MALICIOUS",".*","只拍A机","否","不使用","aborted line2","","","未录制","","未录制",""$/);
+
+  // Test UI trigger via button
+  const f = await fixture(t, { events: completedTake() });
+  await connect(f);
+  f.q('#nav-btn-records').click();
+
+  const btnBackupCsv = f.q('#btn-backup-csv');
+  assert.ok(btnBackupCsv);
+  btnBackupCsv.click();
+
+  assert.equal(f.downloads.length, 1);
+  assert.equal(f.downloads[0].name, 'P_ledger.csv');
+  assert.equal(f.downloads[0].mime, 'text/csv;charset=utf-8');
+  assert.equal(f.downloads[0].text.charCodeAt(0), 0xFEFF);
 });

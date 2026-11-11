@@ -311,6 +311,121 @@ export function loadProjectLedger(storage, projectId) {
   return { project_id: projectId, after_seq: cursor, events, takes, validCounts };
 }
 
+// === GMP RFC 4180 CSV Export & Anti-Formula Injection (CWE-1236) ===
+
+export function escapeCsvCell(val) {
+  if (val === null || val === undefined) return '""';
+  let str = String(val).replace(/[\r\n]+/g, ' ').replace(/^[ ]+|[ ]+$/g, '');
+  // CWE-1236 Formula injection guard: prepend single quote if cell starts with formula characters (=, +, -, @, \t, |)
+  if (/^[=+\-@\t|]/.test(str)) {
+    str = "'" + str;
+  }
+  // RFC 4180 double-quote escaping
+  str = str.replace(/"/g, '""');
+  return `"${str}"`;
+}
+
+export function exportLedgerCsv(ledger, template, { now = Date.now } = {}) {
+  const takes = Array.isArray(ledger?.takes) ? ledger.takes : [];
+  const actionMap = new Map((template?.actions || []).map(a => [a.action_id, a]));
+
+  const headers = [
+    'take_id',
+    'action_id',
+    'action_name',
+    'point_id',
+    'point_name',
+    'participants',
+    'complete',
+    'discarded',
+    'reason',
+    'time_anchor_utc',
+    'duration_s',
+    'cam_a_recording',
+    'cam_a_battery',
+    'cam_b_recording',
+    'cam_b_battery',
+  ];
+
+  const rows = [headers.map(escapeCsvCell).join(',')];
+
+  for (const take of takes) {
+    const act = actionMap.get(take.action_id);
+    const actName = act?.name || take.action_id || '';
+    const pt = act?.points?.find(p => p.point_id === take.point_id);
+    const ptName = pt?.name || (take.point_id ? `${take.point_id} (现场点位)` : '未指定');
+
+    let participantsDesc = '未知';
+    if (take.participants === 3) participantsDesc = '双机同拍';
+    else if (take.participants === 1) participantsDesc = '只拍A机';
+    else if (take.participants === 2) participantsDesc = '只拍B机';
+
+    const camA = take.cameras?.[0];
+    const camB = take.cameras?.[1];
+
+    let durationSec = '';
+    if (Number.isFinite(take.begin_mono_ms) && Number.isFinite(take.end_mono_ms)) {
+      durationSec = ((take.end_mono_ms - take.begin_mono_ms) / 1000).toFixed(1);
+    }
+
+    let timeAnchorUtc = '';
+    if (Number.isFinite(take.time_anchor?.utc_ms) && take.time_anchor.utc_ms > 0) {
+      try {
+        timeAnchorUtc = new Date(take.time_anchor.utc_ms).toISOString();
+      } catch {
+        timeAnchorUtc = '';
+      }
+    }
+
+    const row = [
+      take.take_id,
+      take.action_id || '',
+      actName,
+      take.point_id || '',
+      ptName,
+      participantsDesc,
+      take.complete ? '是' : '否',
+      take.discarded ? '不使用' : '保留',
+      take.reason || '',
+      timeAnchorUtc,
+      durationSec,
+      camA?.seen_recording ? '已录制' : '未录制',
+      camA?.battery ?? '',
+      camB?.seen_recording ? '已录制' : '未录制',
+      camB?.battery ?? '',
+    ];
+    rows.push(row.map(escapeCsvCell).join(','));
+  }
+
+  // Prepend UTF-8 BOM \uFEFF to eliminate Windows Excel Mojibake
+  return '\uFEFF' + rows.join('\r\n');
+}
+
+// === Point Validation & Auto-Deduction Engine ===
+
+export function deduceNextPointId(existingPoints = []) {
+  let maxNum = 0;
+  let useTwoDigits = true;
+  for (const pt of existingPoints) {
+    const pid = typeof pt === 'string' ? pt : (pt?.point_id || '');
+    const m = pid.match(/^P(\d+)$/i);
+    if (m) {
+      const num = parseInt(m[1], 10);
+      if (num > maxNum) maxNum = num;
+      if (m[1].length === 1 && maxNum < 10) useTwoDigits = false;
+    }
+  }
+  const nextNum = maxNum + 1;
+  return useTwoDigits && nextNum < 10 ? `P0${nextNum}` : `P${nextNum}`;
+}
+
+export function isValidPointId(id) {
+  if (typeof id !== 'string') return false;
+  const trimmed = id.trim();
+  if (trimmed.length < 1 || trimmed.length > 16) return false;
+  return /^[A-Za-z0-9_-]+$/.test(trimmed);
+}
+
 // === Template Normalization & Search/Filter ===
 
 export function normalizeTemplate(rawTemplate) {
@@ -1091,6 +1206,7 @@ export function getAppShellMarkup() {
               </div>
             </details>
           </section>
+          <div class="ios-spacer"></div>
           <section id="card-current-action" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-current-action">
             <div class="card-header">
               <div class="card-title-group">${ICONS.step}<h2 id="title-current-action" class="card-title">当前拍摄内容</h2></div>
@@ -1106,17 +1222,25 @@ export function getAppShellMarkup() {
               </div>
               <p id="confirmed-action-name" class="current-action-name">请从拍摄清单中选择一项</p>
             </div>
-            <div id="points-container" hidden><span class="kv-label">拍摄位置</span><div id="point-pills" class="pill-strip"></div></div>
+            <div id="points-container" hidden>
+              <div class="card-header" style="margin-bottom: 4px;">
+                <span class="kv-label">拍摄位置</span>
+                <button id="btn-trigger-add-point" type="button" class="btn-add-point" aria-label="现场新增点位">+ 新增</button>
+              </div>
+              <div id="point-pills" class="pill-strip"></div>
+            </div>
             <div class="button-row">
               <button id="btn-prev-action" type="button" class="btn">${ICONS.prev}<span id="btn-prev-label">上一项</span></button>
               <button id="btn-next-action" type="button" class="btn"><span id="btn-next-label">下一项</span>${ICONS.next}</button>
             </div>
           </section>
+          <div class="ios-spacer"></div>
           <section id="card-record-ledger" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-record-ledger">
             <div class="card-header">
               <div class="card-title-group">${ICONS.record}<h2 id="title-record-ledger" class="card-title">录像与相机控制</h2></div>
               <span id="phase-badge" class="badge" data-state="disconnected">状态：待机</span>
             </div>
+            <div id="target-alert-bar" class="target-alert-bar" role="alert" aria-live="polite" hidden></div>
             <div id="target-camera-strip" class="target-camera-strip" role="group" aria-label="选择本段使用的相机">
               <button id="btn-target-both" type="button" class="target-cam-btn is-active" data-target-cameras="3" aria-pressed="true">双机同拍</button>
               <button id="btn-target-a" type="button" class="target-cam-btn" data-target-cameras="1" aria-pressed="false">只拍 A 机</button>
@@ -1156,6 +1280,7 @@ export function getAppShellMarkup() {
               <button id="btn-open-records" type="button" class="btn">${ICONS.history}<span>已拍记录</span></button>
             </div>
           </section>
+          <div class="ios-spacer"></div>
         </div>
         <div id="view-list" class="view-panel" data-view-panel="list" hidden>
           <section id="card-action-search" class="bento-card bento-span-2" aria-labelledby="title-action-search">
@@ -1198,6 +1323,7 @@ export function getAppShellMarkup() {
                 <button id="btn-backup-copy" type="button" class="btn btn-muted-outline">${ICONS.copy}<span>复制备份</span></button>
                 <button id="btn-backup-share" type="button" class="btn btn-muted-outline">${ICONS.share}<span>分享备份</span></button>
                 <button id="btn-backup-download" type="button" class="btn btn-muted-outline">${ICONS.download}<span>保存备份文件</span></button>
+                <button id="btn-backup-csv" type="button" class="btn btn-muted-outline">${ICONS.download}<span>导出 CSV 表格</span></button>
               </div>
             </div>
           </section>
@@ -1208,6 +1334,25 @@ export function getAppShellMarkup() {
         <button id="nav-btn-list" type="button" class="view-nav-btn" data-view-nav="list" aria-pressed="false">${ICONS.list}<span>拍摄清单</span></button>
         <button id="nav-btn-records" type="button" class="view-nav-btn" data-view-nav="records" aria-pressed="false">${ICONS.history}<span>已拍记录</span></button>
       </nav>
+      <dialog id="modal-add-point" class="ios-bottom-sheet" aria-labelledby="modal-add-point-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <h3 id="modal-add-point-title" class="sheet-title">现场新增点位</h3>
+        <form id="form-add-point" class="sheet-form" method="dialog">
+          <label class="field-label" for="input-add-point-id">
+            <span>点位编号 (如 P01, P02, 必填 ASCII 字母数字)</span>
+            <input id="input-add-point-id" type="text" class="input-field" maxlength="16" placeholder="P01" autocomplete="off" pattern="^[A-Za-z0-9_-]+$" inputmode="text" aria-describedby="msg-add-point-error" required />
+          </label>
+          <label class="field-label" for="input-add-point-name">
+            <span>点位名称 (可选，如 传递口操作面)</span>
+            <input id="input-add-point-name" type="text" class="input-field" maxlength="64" placeholder="未命名点位" autocomplete="off" />
+          </label>
+          <div id="msg-add-point-error" class="sheet-error-msg" role="alert" aria-live="polite"></div>
+          <div class="button-row">
+            <button id="btn-cancel-add-point" type="button" class="btn btn-muted-outline">取消</button>
+            <button id="btn-confirm-add-point" type="submit" class="btn btn-primary">保存并选中</button>
+          </div>
+        </form>
+      </dialog>
     </main>
   `;
 }
@@ -1439,6 +1584,114 @@ export function createApp({
     }
   }
 
+  function openDialog(dialog) {
+    if (!dialog) return;
+    if (typeof dialog.showModal === 'function') {
+      try {
+        dialog.showModal();
+        return;
+      } catch (_) {}
+    }
+    dialog.setAttribute('open', '');
+  }
+
+  function closeDialog(dialog) {
+    if (!dialog) return;
+    if (typeof dialog.close === 'function') {
+      try {
+        dialog.close();
+        return;
+      } catch (_) {}
+    }
+    dialog.removeAttribute('open');
+  }
+
+  let wakeLockSentinel = null;
+  let keepAliveVideoEl = null;
+
+  async function acquireWakeLock() {
+    if (wakeLockSentinel && !wakeLockSentinel.released) return;
+    const nav = win?.navigator || (typeof navigator !== 'undefined' ? navigator : null);
+    if (nav?.wakeLock && typeof nav.wakeLock.request === 'function') {
+      try {
+        const sentinel = await nav.wakeLock.request('screen');
+        wakeLockSentinel = sentinel;
+        sentinel.addEventListener?.('release', () => {
+          if (wakeLockSentinel === sentinel) wakeLockSentinel = null;
+        });
+        return;
+      } catch (_) {}
+    }
+    const isJsDom = /jsdom/i.test(nav?.userAgent || '');
+    if (!isJsDom && doc?.createElement) {
+      if (keepAliveVideoEl) {
+        try {
+          keepAliveVideoEl.play?.().catch(() => {});
+        } catch (_) {}
+      } else if (doc.body) {
+        try {
+          keepAliveVideoEl = doc.createElement('video');
+          keepAliveVideoEl.setAttribute('playsinline', '');
+          keepAliveVideoEl.setAttribute('muted', '');
+          keepAliveVideoEl.setAttribute('loop', '');
+          keepAliveVideoEl.style.position = 'fixed';
+          keepAliveVideoEl.style.width = '1px';
+          keepAliveVideoEl.style.height = '1px';
+          keepAliveVideoEl.style.opacity = '0.01';
+          keepAliveVideoEl.style.pointerEvents = 'none';
+          keepAliveVideoEl.src = 'data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAW1wNDJpc29tYXZjMQAAADFtb292AAAAbG12aGQAAAAA117F89dex/MAAAAAAA+gAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAA==';
+          doc.body.appendChild(keepAliveVideoEl);
+          keepAliveVideoEl.play?.().catch(() => {});
+        } catch (_) {}
+      }
+    }
+  }
+
+  async function releaseWakeLock() {
+    if (wakeLockSentinel) {
+      try {
+        await wakeLockSentinel.release();
+      } catch (_) {}
+      wakeLockSentinel = null;
+    }
+    if (keepAliveVideoEl) {
+      try {
+        const isJsDom = /jsdom/i.test(win?.navigator?.userAgent || '');
+        if (!isJsDom) keepAliveVideoEl.pause?.();
+        keepAliveVideoEl.remove?.();
+      } catch (_) {}
+      keepAliveVideoEl = null;
+    }
+  }
+
+  function harvestOrphanPointsFromLedger() {
+    if (!state.ledger?.takes || !state.template?.actions) return;
+    let harvestedAny = false;
+    for (const take of state.ledger.takes) {
+      const cleanPid = typeof take.point_id === 'string' ? take.point_id.trim() : '';
+      if (take.action_id && cleanPid && isValidPointId(cleanPid)) {
+        const action = state.template.actions.find(a => a.action_id === take.action_id);
+        if (action) {
+          action.points = action.points || [];
+          if (!action.points.some(p => (p.point_id || '').toUpperCase() === cleanPid.toUpperCase())) {
+            action.points.push({
+              point_id: cleanPid,
+              name: `${cleanPid} (现场补录)`,
+              orphan: true,
+            });
+            harvestedAny = true;
+          }
+        }
+      }
+    }
+    if (harvestedAny) {
+      state.templateVersion += 1;
+      try {
+        storage.setItem(TEMPLATE_CACHE_KEY, JSON.stringify(state.template));
+      } catch (_) {}
+    }
+  }
+
   function refreshLocalLedger(projectId = state.status.project_id) {
     if (!projectId) {
       state.ledger = { project_id: '', after_seq: 0, events: [], takes: [], validCounts: new Map() };
@@ -1446,6 +1699,7 @@ export function createApp({
     }
     try {
       state.ledger = loadProjectLedger(storage, projectId);
+      harvestOrphanPointsFromLedger();
     } catch (error) {
       handleError('读取拍摄记录', error);
     }
@@ -1456,6 +1710,7 @@ export function createApp({
     if (!snapshot || typeof snapshot !== 'object') return;
     statusVersion += 1;
     state.lastStatusReceivedAt = now();
+    const prevPhase = state.status.phase;
     const prevProjectId = state.status.project_id;
     if (typeof snapshot.project_id === 'string') state.status.project_id = snapshot.project_id;
     if (typeof snapshot.template_id === 'string' && snapshot.template_id) state.status.template_id = snapshot.template_id;
@@ -1490,6 +1745,14 @@ export function createApp({
     if (state.status.phase === 'idle' && !pendingStart) {
       state.pendingStartCommandId = null;
     }
+    if (state.status.phase === 'recording') {
+      void acquireWakeLock();
+    } else if (state.status.phase === 'idle') {
+      void releaseWakeLock();
+    }
+    if ((prevPhase === 'recording' || prevPhase === 'stopping') && state.status.phase === 'idle' && state.status.project_id) {
+      void syncCurrentProject(state.status.project_id, { silent: true });
+    }
     if (prevProjectId !== state.status.project_id) {
       state.editingReassignTakeId = null;
       state.reassignDrafts.clear();
@@ -1514,6 +1777,7 @@ export function createApp({
     state.connected = Boolean(info?.connected);
     state.connecting = false;
     if (!info?.connected) {
+      void releaseWakeLock();
       state.syncingLog = false;
       state.pendingSelect = null;
       if (info?.error && info.error.code && info.error.code !== 'disconnected') {
@@ -1797,6 +2061,53 @@ export function createApp({
         setTextIfChanged(obsTextEl, `已就绪（${describeTargetCameras(effectiveTarget)}），可以开始录像`);
       }
     }
+
+    const targetAlertBar = el('target-alert-bar');
+    if (targetAlertBar) {
+      let alertMsg = '';
+      const targetCams = state.status.target_cameras;
+      const camA = state.status.cameras?.[0];
+      const camB = state.status.cameras?.[1];
+      const isRecording = state.status.phase === 'recording';
+
+      if (state.connected) {
+        if (targetCams === 1) {
+          if (camA && !camA.connected) {
+            alertMsg = isRecording ? '只拍 A 机模式下 A 机已断开！' : '只拍 A 机模式下 A 机未连接，无法开始拍摄';
+          } else if (camA && !camA.ready && !isRecording) {
+            alertMsg = '只拍 A 机模式下 A 机未就绪，请检查 A 机状态';
+          } else {
+            alertMsg = '注意：当前为只拍 A 机模式，B 机不参与本段录像';
+          }
+        } else if (targetCams === 2) {
+          if (camB && !camB.connected) {
+            alertMsg = isRecording ? '只拍 B 机模式下 B 机已断开！' : '只拍 B 机模式下 B 机未连接，无法开始拍摄';
+          } else if (camB && !camB.ready && !isRecording) {
+            alertMsg = '只拍 B 机模式下 B 机未就绪，请检查 B 机状态';
+          } else {
+            alertMsg = '注意：当前为只拍 B 机模式，A 机不参与本段录像';
+          }
+        } else if (targetCams === 3) {
+          if (camA && camB) {
+            if (!camA.connected || !camB.connected) {
+              const missing = !camA.connected && !camB.connected ? 'A/B 双机' : (!camA.connected ? 'A 机' : 'B 机');
+              alertMsg = isRecording ? `录像中：${missing}断开连接！` : `双机模式下 ${missing} 未连接，无法开始同拍`;
+            } else if (!camA.ready || !camB.ready) {
+              const unready = !camA.ready && !camB.ready ? 'A/B 双机' : (!camA.ready ? 'A 机' : 'B 机');
+              alertMsg = isRecording ? `录像中：${unready}状态异常` : `双机模式下 ${unready} 未就绪，无法开始同拍`;
+            }
+          }
+        }
+      }
+
+      if (alertMsg) {
+        targetAlertBar.hidden = false;
+        setTextIfChanged(targetAlertBar, alertMsg);
+      } else {
+        targetAlertBar.hidden = true;
+        setTextIfChanged(targetAlertBar, '');
+      }
+    }
   }
 
   // Targeted tick update for staleness timer — never touches action/filter/take interactive lists
@@ -1902,6 +2213,12 @@ export function createApp({
       if (entry.actionSelect.value !== draft.action_id) {
         entry.actionSelect.value = draft.action_id;
       }
+    } else if (draft.action_id) {
+      const orphanActOpt = doc.createElement('option');
+      orphanActOpt.value = draft.action_id;
+      orphanActOpt.textContent = `${draft.action_id} — (现场保留动作·未命名)`;
+      entry.actionSelect.appendChild(orphanActOpt);
+      entry.actionSelect.value = draft.action_id;
     } else if (entry.actionSelect.options.length > 0) {
       draft.action_id = entry.actionSelect.options[0].value;
       entry.actionSelect.value = draft.action_id;
@@ -1927,6 +2244,12 @@ export function createApp({
       if (entry.pointSelect.value !== (draft.point_id ?? '')) {
         entry.pointSelect.value = draft.point_id ?? '';
       }
+    } else if (draft.point_id) {
+      const orphanOpt = doc.createElement('option');
+      orphanOpt.value = draft.point_id;
+      orphanOpt.textContent = `${draft.point_id} — (现场保留点位·未命名)`;
+      entry.pointSelect.appendChild(orphanOpt);
+      entry.pointSelect.value = draft.point_id;
     } else {
       draft.point_id = '';
       entry.pointSelect.value = '';
@@ -2298,8 +2621,7 @@ export function createApp({
     const pointsContainer = el('points-container');
     const pointPillsEl = el('point-pills');
     if (pointsContainer && pointPillsEl) {
-      const points = confirmedAction?.points || [];
-      if (points.length === 0) {
+      if (!confirmedAction) {
         pointsContainer.hidden = true;
         if (pointPillCache.signature !== '') {
           pointPillsEl.replaceChildren();
@@ -2308,8 +2630,9 @@ export function createApp({
         }
       } else {
         pointsContainer.hidden = false;
+        const points = confirmedAction.points || [];
         const allPoints = [{ point_id: '', name: '未指定' }, ...points];
-        const sig = `${confirmedAction.action_id}::${allPoints.map(p => `${p.point_id}=${p.name}`).join('|')}`;
+        const sig = `${confirmedAction.action_id}::${allPoints.map(p => `${p.point_id}=${p.name}=${Boolean(p.orphan)}`).join('|')}`;
         if (pointPillCache.signature !== sig) {
           pointPillsEl.replaceChildren();
           pointPillCache.nodesByPointId.clear();
@@ -2346,11 +2669,19 @@ export function createApp({
             pendingStart ||
             state.status.phase !== 'idle'
           );
+          let displayLabel = '不指定位置';
+          if (pt.point_id) {
+            if (!pt.name || pt.name === pt.point_id) {
+              displayLabel = pt.point_id;
+            } else if (pt.name.startsWith(pt.point_id)) {
+              displayLabel = pt.name;
+            } else {
+              displayLabel = `${pt.point_id} ${pt.name}`;
+            }
+          }
           setTextIfChanged(
             btn,
-            isPendingThis
-              ? '正在切换…'
-              : (pt.point_id ? `${pt.point_id} ${pt.name}` : '不指定位置')
+            isPendingThis ? '正在切换…' : displayLabel
           );
         }
       }
@@ -2570,45 +2901,68 @@ export function createApp({
 
   // === Core Operations & BLE Flows ===
 
-  async function syncCurrentProject(explicitProjectId = state.status.project_id) {
+  let activeSyncPromise = null;
+  let hasPendingSyncRequest = false;
+
+  function syncCurrentProject(explicitProjectId = state.status.project_id, { silent = false } = {}) {
     const projectId = explicitProjectId || state.status.project_id;
     if (!projectId) {
       refreshLocalLedger('');
       render();
-      return null;
+      return Promise.resolve(null);
+    }
+    if (activeSyncPromise) {
+      hasPendingSyncRequest = true;
+      return activeSyncPromise;
     }
     state.syncingLog = true;
-    render();
-    try {
-      const afterSeq = loadCursor(storage, projectId);
-      setBanner('正在更新拍摄记录…', { tone: 'busy', code: 'GET_LOG' });
-      const result = await client.syncLog(
-        afterSeq,
-        projectId,
-        async (event, context) => {
-          await persistEventToStorage(storage, event, context);
+    if (!silent) render();
+
+    activeSyncPromise = (async () => {
+      let finalResult = null;
+      try {
+        do {
+          hasPendingSyncRequest = false;
+          const currentProj = state.status.project_id || projectId;
+          const afterSeq = loadCursor(storage, currentProj);
+          if (!silent) setBanner('正在更新拍摄记录…', { tone: 'busy', code: 'GET_LOG' });
+          const result = await client.syncLog(
+            afterSeq,
+            currentProj,
+            async (event, context) => {
+              await persistEventToStorage(storage, event, context);
+            }
+          );
+          refreshLocalLedger(currentProj);
+          if (result?.snapshot && Number.isSafeInteger(result.snapshot.event_seq)) {
+            state.status.event_seq = Math.max(state.status.event_seq, result.snapshot.event_seq);
+          }
+          if (result?.snapshot && Number.isSafeInteger(result.snapshot.take_id)) {
+            state.status.take_id = Math.max(state.status.take_id, result.snapshot.take_id);
+          }
+          finalResult = result;
+          if (!silent) {
+            setBanner(`拍摄记录已更新，共 ${state.ledger.takes.length} 段`, {
+              tone: 'ok',
+              code: 'SYNC_OK',
+            });
+          }
+        } while (hasPendingSyncRequest && state.connected);
+        return finalResult;
+      } catch (error) {
+        refreshLocalLedger(projectId);
+        if (!silent) {
+          handleError('更新拍摄记录', error);
         }
-      );
-      refreshLocalLedger(projectId);
-      if (result?.snapshot && Number.isSafeInteger(result.snapshot.event_seq)) {
-        state.status.event_seq = Math.max(state.status.event_seq, result.snapshot.event_seq);
+        return null;
+      } finally {
+        state.syncingLog = false;
+        activeSyncPromise = null;
+        hasPendingSyncRequest = false;
+        render();
       }
-      if (result?.snapshot && Number.isSafeInteger(result.snapshot.take_id)) {
-        state.status.take_id = Math.max(state.status.take_id, result.snapshot.take_id);
-      }
-      setBanner(`拍摄记录已更新，共 ${state.ledger.takes.length} 段`, {
-        tone: 'ok',
-        code: 'SYNC_OK',
-      });
-      return result;
-    } catch (error) {
-      refreshLocalLedger(projectId);
-      handleError('更新拍摄记录', error);
-      return null;
-    } finally {
-      state.syncingLog = false;
-      render();
-    }
+    })();
+    return activeSyncPromise;
   }
 
   async function runConnectSequence(connectPromise) {
@@ -2908,6 +3262,7 @@ export function createApp({
         // sending an unbound STOP while START is still in flight.
         if (!newerStatus || state.status.phase !== 'idle') await stopRecording();
       } else if (!newerStatus) {
+        void acquireWakeLock();
         setBanner('开始请求已收到，正在等待相机确认录像', {
           tone: 'warn',
           code: 'START_ACK',
@@ -2961,6 +3316,7 @@ export function createApp({
         if (!newerStatus && typeof reply.phase === 'string') {
           state.status.phase = reply.phase;
           if (reply.phase === 'idle') {
+            void releaseWakeLock();
             state.status.active_take_id = 0;
             if (state.status.selectionSupported) state.status.active_participants = 0;
           }
@@ -2969,6 +3325,7 @@ export function createApp({
           state.status.event_seq = Math.max(state.status.event_seq, reply.event_seq);
         }
         setBanner('停止请求已收到，请查看相机是否已停止', { tone: 'ok', code: 'STOP_ACK' });
+        void syncCurrentProject(projectId, { silent: true });
         return reply;
       } catch (error) {
         if (connectionVersion === connection && state.status.project_id === projectId) {
@@ -3097,15 +3454,15 @@ export function createApp({
     return payload;
   }
 
-  function triggerDownload(filename, text) {
+  function triggerDownload(filename, text, mimeType = 'application/json;charset=utf-8') {
     if (typeof download === 'function') {
-      download(filename, text);
+      download(filename, text, mimeType);
       return;
     }
     if (!doc || typeof Blob === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
       return;
     }
-    const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+    const blob = new Blob([text], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = doc.createElement('a');
     a.href = url;
@@ -3361,6 +3718,130 @@ export function createApp({
     });
   }
 
+  function downloadCsv() {
+    const projectId = state.status.project_id || state.ledger.project_id || 'uninitialized';
+    if (projectId) refreshLocalLedger(projectId);
+    const csvContent = exportLedgerCsv(state.ledger, state.template, { now });
+    const safeProj = projectId.replace(/[^A-Za-z0-9_.-]/g, '_');
+    const filename = `${safeProj}_ledger.csv`;
+    triggerDownload(filename, csvContent, 'text/csv;charset=utf-8');
+    setBanner('CSV 拍摄记录已生成，请留意浏览器的保存提示', { tone: 'ok', code: 'CSV_DOWNLOAD_OK' });
+    return csvContent;
+  }
+
+  const btnBackupCsv = el('btn-backup-csv');
+  if (btnBackupCsv) {
+    btnBackupCsv.addEventListener('click', () => {
+      downloadCsv();
+    });
+  }
+
+  const modalAddPoint = el('modal-add-point');
+  const btnTriggerAddPoint = el('btn-trigger-add-point');
+  const btnCancelAddPoint = el('btn-cancel-add-point');
+  const formAddPoint = el('form-add-point');
+  const inputAddPointId = el('input-add-point-id');
+  const inputAddPointName = el('input-add-point-name');
+  const msgAddPointError = el('msg-add-point-error');
+
+  let isNameComposing = false;
+  if (inputAddPointName) {
+    inputAddPointName.addEventListener('compositionstart', () => { isNameComposing = true; });
+    inputAddPointName.addEventListener('compositionend', () => { isNameComposing = false; });
+    inputAddPointName.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && isNameComposing) {
+        e.preventDefault();
+      }
+    });
+  }
+
+  if (btnTriggerAddPoint) {
+    btnTriggerAddPoint.setAttribute('aria-haspopup', 'dialog');
+    btnTriggerAddPoint.addEventListener('click', () => {
+      const currentActionId = state.status.action_id;
+      if (!currentActionId) {
+        setBanner('请先选择拍摄动作后再添加点位', { tone: 'warn' });
+        render();
+        return;
+      }
+      const act = state.template.actions.find(a => a.action_id === currentActionId);
+      const nextId = deduceNextPointId(act?.points || []);
+      if (inputAddPointId) inputAddPointId.value = nextId;
+      if (inputAddPointName) inputAddPointName.value = '';
+      if (msgAddPointError) setTextIfChanged(msgAddPointError, '');
+      openDialog(modalAddPoint);
+      inputAddPointName?.focus?.();
+    });
+  }
+
+  if (btnCancelAddPoint) {
+    btnCancelAddPoint.addEventListener('click', (e) => {
+      e.preventDefault();
+      closeDialog(modalAddPoint);
+    });
+  }
+
+  if (modalAddPoint) {
+    modalAddPoint.addEventListener('click', (e) => {
+      if (e.target === modalAddPoint) {
+        closeDialog(modalAddPoint);
+      }
+    });
+  }
+
+  if (formAddPoint) {
+    formAddPoint.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (isNameComposing) return;
+      const rawId = inputAddPointId?.value?.trim() || '';
+      if (!isValidPointId(rawId)) {
+        if (msgAddPointError) {
+          setTextIfChanged(msgAddPointError, '点位编号仅支持 1-16 位英文字母、数字、下划线及短横线 (ASCII)');
+        }
+        return;
+      }
+      const currentActionId = state.status.action_id;
+      const act = state.template.actions.find(a => a.action_id === currentActionId);
+      if (!act) {
+        if (msgAddPointError) {
+          setTextIfChanged(msgAddPointError, '未找到当前动作，请重新选择');
+        }
+        return;
+      }
+      act.points = act.points || [];
+      if (act.points.some(p => p.point_id.toUpperCase() === rawId.toUpperCase())) {
+        if (msgAddPointError) {
+          setTextIfChanged(msgAddPointError, `点位编号 ${rawId} 已存在，请使用其他编号`);
+        }
+        return;
+      }
+      const rawName = (inputAddPointName?.value?.trim() || rawId).slice(0, 32);
+      act.points.push({ point_id: rawId, name: rawName });
+      try {
+        storage.setItem(TEMPLATE_CACHE_KEY, JSON.stringify(state.template));
+      } catch (_) {}
+      state.templateVersion += 1;
+      closeDialog(modalAddPoint);
+      const res = await selectAction(act.action_id, rawId);
+      if (res && res.ok === true) {
+        setBanner(`已添加并选中点位 ${rawId}`, { tone: 'ok' });
+      }
+      render();
+    });
+  }
+
+  const onVisibilityChange = () => {
+    if (doc?.visibilityState === 'visible') {
+      if (state.status.phase === 'recording') {
+        void acquireWakeLock();
+      }
+      if (state.connected && state.status.project_id) {
+        void syncCurrentProject(state.status.project_id, { silent: true });
+      }
+    }
+  };
+  doc?.addEventListener?.('visibilitychange', onVisibilityChange);
+
   const btnTheme = el('btn-theme-toggle');
   if (btnTheme) {
     btnTheme.addEventListener('click', () => {
@@ -3423,10 +3904,17 @@ export function createApp({
     copyBackup,
     shareBackup,
     downloadBackup,
+    downloadCsv,
+    openDialog,
+    closeDialog,
+    acquireWakeLock,
+    releaseWakeLock,
     disconnect,
     destroy() {
       clearInterval(staleTimer);
       win?.removeEventListener?.('resize', onWindowResize);
+      doc?.removeEventListener?.('visibilitychange', onVisibilityChange);
+      void releaseWakeLock();
     },
   };
 }
