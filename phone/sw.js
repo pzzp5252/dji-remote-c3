@@ -1,7 +1,7 @@
 'use strict';
 
 const CACHE_PREFIX = 'dji-field-ui-';
-const CACHE_NAME = 'dji-field-ui-v4';
+const CACHE_NAME = 'dji-field-ui-v8';
 const PAGE_URL = new URL('./index.html', self.location.href).href;
 const ROOT_URL = new URL('./', self.location.href).href;
 const PRECACHE_URLS = [

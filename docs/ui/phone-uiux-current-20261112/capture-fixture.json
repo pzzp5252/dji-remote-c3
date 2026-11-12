@@ -1,0 +1,284 @@
+{
+  "notice": "All entries are synthetic documentation fixtures; no hardware or private ledger is read.",
+  "project_id": "UIUX_DEMO_20261112",
+  "template": {
+    "schema_version": 1,
+    "template_id": "UIUX_DEMO_V1",
+    "template_name": "UIUX 说明用模拟清单（非正式业务数据）",
+    "actions": [
+      {
+        "action_id": "S01",
+        "name": "静态气流流型检查",
+        "type": "static",
+        "group": "分装区",
+        "order": 1
+      },
+      {
+        "action_id": "S02",
+        "name": "设备周边烟雾流向观察",
+        "type": "static",
+        "group": "分装区",
+        "order": 2
+      },
+      {
+        "action_id": "S03",
+        "name": "传递窗静态气流检查",
+        "type": "static",
+        "group": "灌装线",
+        "order": 3
+      },
+      {
+        "action_id": "S04",
+        "name": "精洗间送风覆盖检查",
+        "type": "static",
+        "group": "精洗间",
+        "order": 4
+      },
+      {
+        "action_id": "D27",
+        "name": "人员操作期间气流流型检查",
+        "type": "dynamic",
+        "group": "灌装线",
+        "order": 5,
+        "points": [
+          {
+            "point_id": "P01",
+            "name": "操作口"
+          },
+          {
+            "point_id": "P02",
+            "name": "物料传递口"
+          },
+          {
+            "point_id": "P03",
+            "name": "人员操作位置"
+          },
+          {
+            "point_id": "P04",
+            "name": "设备前侧"
+          },
+          {
+            "point_id": "P05",
+            "name": "设备后侧"
+          },
+          {
+            "point_id": "P06",
+            "name": "物料准备区"
+          },
+          {
+            "point_id": "P07",
+            "name": "移交位置"
+          },
+          {
+            "point_id": "P08",
+            "name": "工作台上方"
+          },
+          {
+            "point_id": "P09",
+            "name": "工作台下方"
+          },
+          {
+            "point_id": "P10",
+            "name": "门口位置"
+          },
+          {
+            "point_id": "P11",
+            "name": "操作人员侧方长点位名称示例"
+          },
+          {
+            "point_id": "P12",
+            "name": "原名称未恢复",
+            "orphan": true
+          }
+        ]
+      },
+      {
+        "action_id": "D28",
+        "name": "开门及人员进出期间气流观察",
+        "type": "dynamic",
+        "group": "分装区",
+        "order": 6
+      },
+      {
+        "action_id": "D29",
+        "name": "物料传递期间气流检查",
+        "type": "dynamic",
+        "group": "灌装线",
+        "order": 7
+      },
+      {
+        "action_id": "D30",
+        "name": "设备操作期间气流流型检查",
+        "type": "dynamic",
+        "group": "精洗间",
+        "order": 8
+      }
+    ]
+  },
+  "events": [
+    {
+      "schema_version": 1,
+      "project_id": "UIUX_DEMO_20261112",
+      "template_id": "UIUX_DEMO_V1",
+      "event_seq": 1,
+      "type": "TAKE_BEGIN",
+      "boot_id": "uiux-demo-boot",
+      "mono_ms": 1000,
+      "take_id": 1,
+      "action_id": "S01",
+      "point_id": "",
+      "command_id": "DOC_START_1",
+      "source": "ble",
+      "participants": 3,
+      "time_anchor": {
+        "boot_id": "uiux-demo-boot",
+        "mono_ms": 0,
+        "utc_ms": 1800000000000
+      }
+    },
+    {
+      "schema_version": 1,
+      "project_id": "UIUX_DEMO_20261112",
+      "template_id": "UIUX_DEMO_V1",
+      "event_seq": 2,
+      "type": "TAKE_END",
+      "boot_id": "uiux-demo-boot",
+      "mono_ms": 2000,
+      "take_id": 1,
+      "action_id": "S01",
+      "point_id": "",
+      "begin_boot_id": "uiux-demo-boot",
+      "begin_mono_ms": 1000,
+      "complete": true,
+      "reason": "stopped",
+      "observation_lost": false,
+      "cameras": [
+        {
+          "seen_recording": true,
+          "stop_confirmed": true,
+          "record_time": 8,
+          "battery": 83
+        },
+        {
+          "seen_recording": true,
+          "stop_confirmed": true,
+          "record_time": 8,
+          "battery": 79
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "project_id": "UIUX_DEMO_20261112",
+      "template_id": "UIUX_DEMO_V1",
+      "event_seq": 3,
+      "type": "TAKE_BEGIN",
+      "boot_id": "uiux-demo-boot",
+      "mono_ms": 3000,
+      "take_id": 2,
+      "action_id": "D27",
+      "point_id": "P03",
+      "command_id": "DOC_START_2",
+      "source": "ble",
+      "participants": 3,
+      "time_anchor": {
+        "boot_id": "uiux-demo-boot",
+        "mono_ms": 0,
+        "utc_ms": 1800000000000
+      }
+    },
+    {
+      "schema_version": 1,
+      "project_id": "UIUX_DEMO_20261112",
+      "template_id": "UIUX_DEMO_V1",
+      "event_seq": 4,
+      "type": "TAKE_END",
+      "boot_id": "uiux-demo-boot",
+      "mono_ms": 4000,
+      "take_id": 2,
+      "action_id": "D27",
+      "point_id": "P03",
+      "begin_boot_id": "uiux-demo-boot",
+      "begin_mono_ms": 3000,
+      "complete": false,
+      "reason": "stop_timeout",
+      "observation_lost": true,
+      "cameras": [
+        {
+          "seen_recording": true,
+          "stop_confirmed": true,
+          "record_time": 8,
+          "battery": 83
+        },
+        {
+          "seen_recording": false,
+          "stop_confirmed": false,
+          "record_time": 0,
+          "battery": 79
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "project_id": "UIUX_DEMO_20261112",
+      "template_id": "UIUX_DEMO_V1",
+      "event_seq": 5,
+      "type": "TAKE_BEGIN",
+      "boot_id": "uiux-demo-boot",
+      "mono_ms": 5000,
+      "take_id": 3,
+      "action_id": "D28",
+      "point_id": "",
+      "command_id": "DOC_START_3",
+      "source": "ble",
+      "participants": 3,
+      "time_anchor": {
+        "boot_id": "uiux-demo-boot",
+        "mono_ms": 0,
+        "utc_ms": 1800000000000
+      }
+    },
+    {
+      "schema_version": 1,
+      "project_id": "UIUX_DEMO_20261112",
+      "template_id": "UIUX_DEMO_V1",
+      "event_seq": 6,
+      "type": "TAKE_END",
+      "boot_id": "uiux-demo-boot",
+      "mono_ms": 6000,
+      "take_id": 3,
+      "action_id": "D28",
+      "point_id": "",
+      "begin_boot_id": "uiux-demo-boot",
+      "begin_mono_ms": 5000,
+      "complete": true,
+      "reason": "stopped",
+      "observation_lost": false,
+      "cameras": [
+        {
+          "seen_recording": true,
+          "stop_confirmed": true,
+          "record_time": 8,
+          "battery": 83
+        },
+        {
+          "seen_recording": true,
+          "stop_confirmed": true,
+          "record_time": 8,
+          "battery": 79
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "project_id": "UIUX_DEMO_20261112",
+      "template_id": "UIUX_DEMO_V1",
+      "event_seq": 7,
+      "type": "MARK_DISCARD",
+      "boot_id": "uiux-demo-boot",
+      "mono_ms": 7000,
+      "take_id": 3,
+      "discard": true
+    }
+  ]
+}

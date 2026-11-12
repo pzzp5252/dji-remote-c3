@@ -1,0 +1,568 @@
+{
+  "captured_on": "2026-11-12",
+  "source": "current uncommitted working tree",
+  "app_cache": "dji-field-ui-v8",
+  "browser": "Headless Chromium, desktop engine with CSS viewport emulation",
+  "hardware_access": "No USB, BLE hardware, camera or real phone connection used.",
+  "data": "Synthetic mock client, independent memory storage, capture-fixture.json initial events.",
+  "capture_method": "Auto-boot disabled before navigation; one createApp instance; native DOM interactions. Recording confirmations, held STOP reply and quota errors injected only at mock client/storage boundaries; no app.state writes.",
+  "css_viewport_note": "Dimensions are CSS pixels. PNG pixel dimensions may differ with device scale factor; see image_pixels.",
+  "source_sha256": {
+    "phone/app.mjs": "4f65bfbdc244cac9ba252c37167ccd7b2173c79d7a82d07210d368cc63f04e17",
+    "phone/styles.css": "dae244e54a2cc3ab68af382879d536e16319dcf683e97ddbc17f4128659a12d7",
+    "phone/sw.js": "d4bbadad37b9001924c6f4d5f458f6d72f5e349fa9291bf54aad8976522c365d",
+    "phone/ble-client.mjs": "de7adcc8b1a7acc0878e4c75ef963e1c52ab6bc357f010859a2c1d5b2cae6af4"
+  },
+  "screenshots": [
+    {
+      "id": "01-disconnected-light",
+      "title": "未连接首页",
+      "note": "390×844，浅色；只创建一个隔离 app 实例，模拟客户端尚未连接。",
+      "image": "images/01-disconnected-light.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": false,
+      "phase": "idle",
+      "template_match": false,
+      "modal": null,
+      "observation": "请先连接遥控器",
+      "record_disabled": true,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 71530,
+      "sha256": "cba52790cc4bc6881131542814cef332f3e38ed87482ca0a2ea8f4b55ed2de6b"
+    },
+    {
+      "id": "02-ready-light",
+      "title": "连接后待机首页",
+      "note": "390×844；A/B 模拟就绪，D27/P03 已确认；历史记录来自说明用事件。",
+      "image": "images/02-ready-light.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 92382,
+      "sha256": "92cdc8401fa63cfc52c266cfdd68859613203b7d58a09524fa4f1be37c228d4c"
+    },
+    {
+      "id": "03-camera-details",
+      "title": "首页展开相机详情",
+      "note": "390×844；原生详情控件展开 A 机，观察区内部滚动。",
+      "image": "images/03-camera-details.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 106833,
+      "sha256": "e91592a5ddafe059a87f4726d2b2e4b1959d1679b5b3302f73c6ad305c775e4c"
+    },
+    {
+      "id": "04-shoot-details-sheet",
+      "title": "当前动作全文与点位补名入口",
+      "note": "390×844；等待原生详情抽屉入场动画完成，当前 D27/P01，保留未命名历史点位入口。",
+      "image": "images/04-shoot-details-sheet.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": "modal-shoot-details",
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "root_font": "16px",
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 59722,
+      "sha256": "502add1412f33ee052ef1d77e89dd33c3b16323abc8b813c2329336a9a33903b"
+    },
+    {
+      "id": "05-settings-device-details",
+      "title": "全局设置及设备详情",
+      "note": "390×844；等待设置抽屉入场完成，设备详情已展开。",
+      "image": "images/05-settings-device-details.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": "modal-settings",
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "root_font": "16px",
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 87814,
+      "sha256": "0944921bb2810bd22bd147b9ea197a817dc48422e18636f8827c71552e9b9709"
+    },
+    {
+      "id": "06-action-list",
+      "title": "拍摄清单：搜索与三组筛选",
+      "note": "390×844；8 个模拟动作，区域/类型/有无记录分别筛选。",
+      "image": "images/06-action-list.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "list",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 123612,
+      "sha256": "8588a8e823eb8305f9f5887cf71f7f20f3c08fd5ca17043043a9c19ccfeb1dce"
+    },
+    {
+      "id": "07-action-list-filtered",
+      "title": "清单搜索与筛选组合",
+      "note": "390×844；输入 27 并选择动态；动作确认与返回拍摄为不同操作。",
+      "image": "images/07-action-list-filtered.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "list",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 84811,
+      "sha256": "99f9c15c40a0247edfe784a7f61ae22cf90b3560f2f26b1bb011a33e48ff1b2c"
+    },
+    {
+      "id": "08-records",
+      "title": "已拍记录、结果与更正操作",
+      "note": "390×844；模拟正常段、异常段和标记不用段，列表需纵向滚动。",
+      "image": "images/08-records.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "records",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 113661,
+      "sha256": "081dd295cf93485b767ce945d2b4daf80f8b8653bc70d76a5e2a1264a14cccec"
+    },
+    {
+      "id": "09-reassign-editor",
+      "title": "已结束片段的归属更正面板",
+      "note": "390×844；打开第 2 段模拟记录更正面板，未提交修改。",
+      "image": "images/09-reassign-editor.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "records",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 110154,
+      "sha256": "b222d001b64a7d93ef490e5bfacde2cbf53b67e19c5e0ff94a3288fe2f787b32"
+    },
+    {
+      "id": "10-records-backup",
+      "title": "记录页底部的备份与导出",
+      "note": "390×844；记录页底部四个导出/分享入口，文件不包含相机视频。",
+      "image": "images/10-records-backup.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "records",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 115998,
+      "sha256": "90ee2f2dc9a74d0b03d1f2a6747a92f3acef29488b21160a29b8eb4045639125"
+    },
+    {
+      "id": "11-add-point-sheet",
+      "title": "新增点位输入抽屉",
+      "note": "390×844；等待入场完成的原生表单，未保存；没有模拟 iOS 原生软键盘。",
+      "image": "images/11-add-point-sheet.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": "modal-add-point",
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "root_font": "16px",
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 64545,
+      "sha256": "5b1c446133154aa49537a6b932e1973fa8569eb4c6e6b64aa0a0f9721bf3dc50"
+    },
+    {
+      "id": "12a-starting-dark",
+      "title": "开始请求已收到、尚待相机确认",
+      "note": "390×844，深色；START 已发出，但 mock 尚未提供相机录像通知，主按钮已可停止/取消。",
+      "image": "images/12a-starting-dark.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "dark",
+      "view": "shoot",
+      "connected": true,
+      "phase": "starting",
+      "template_match": true,
+      "modal": null,
+      "observation": "正在等待相机开始录像…",
+      "record_disabled": false,
+      "record_mode": "stop",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 96633,
+      "sha256": "eebd738132a158bf5d45be2d7bd14b381baf784247c8d11e06e383c9f88791cd"
+    },
+    {
+      "id": "12-recording-dark",
+      "title": "录像中的现场页",
+      "note": "390×844，深色；演示 START 后由 mock client 提供相机录像确认，不是真机证据。",
+      "image": "images/12-recording-dark.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "dark",
+      "view": "shoot",
+      "connected": true,
+      "phase": "recording",
+      "template_match": true,
+      "modal": null,
+      "observation": "正在录像（A机、B机录像中）",
+      "record_disabled": false,
+      "record_mode": "stop",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 95320,
+      "sha256": "c3c40dc884cdfcbf964f39f03b83c730c93322b432da57a41a15a7e083355451"
+    },
+    {
+      "id": "13-recording-list-dark",
+      "title": "录像中跨页查看清单",
+      "note": "390×844，深色；跨页状态条和直接停止入口，录像状态来自模拟通知。",
+      "image": "images/13-recording-list-dark.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "dark",
+      "view": "list",
+      "connected": true,
+      "phase": "recording",
+      "template_match": true,
+      "modal": null,
+      "observation": "正在录像（A机、B机录像中）",
+      "record_disabled": false,
+      "record_mode": "stop",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 121029,
+      "sha256": "ad71e9fa5087c085ebffb13f71dd107876a3c38bdf9b4bcd0299ffcac701bc7e"
+    },
+    {
+      "id": "14-stopping-dark",
+      "title": "停止请求等待中",
+      "note": "390×844，深色；在 mock 传输边界暂挂 STOP 回复，未改写 app.state。",
+      "image": "images/14-stopping-dark.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "dark",
+      "view": "shoot",
+      "connected": true,
+      "phase": "stopping",
+      "template_match": true,
+      "modal": null,
+      "observation": "正在停止录像，请稍候…",
+      "record_disabled": true,
+      "record_mode": "stop",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 92716,
+      "sha256": "421a872e142f4ee8e8d59c62aa900dafe63e06c8b986caa8817e85711a881055"
+    },
+    {
+      "id": "15-template-mismatch-small",
+      "title": "清单不匹配：修复后的门禁表达",
+      "note": "375×667；模拟设备清单 ID 改为 HARDWARE_ACCEPTANCE_V1，手机仍为说明清单，START 禁用。",
+      "image": "images/15-template-mismatch-small.png",
+      "viewport": {
+        "width": 375,
+        "height": 667
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": false,
+      "modal": null,
+      "observation": "相机已就绪（双机同拍），暂不能开始录像 · 清单不匹配：设备 HARDWARE_ACCEPTANCE_V1，手机 UIUX_DEMO_V1；请导入设备项目对应的清单后再拍摄或修改归属",
+      "record_disabled": true,
+      "record_mode": "start",
+      "root_scroll_width": 375,
+      "image_pixels": {
+        "width": 469,
+        "height": 834
+      },
+      "image_bytes": 85540,
+      "sha256": "e77d403990cf1fc8410b75461f6375fcb23b2f433eda95f8d13717920a971690"
+    },
+    {
+      "id": "16-small-ready",
+      "title": "较小屏幕的正常待机布局",
+      "note": "375×667；模拟 STOP 已结束并收到新鲜待机通知，恢复匹配。",
+      "image": "images/16-small-ready.png",
+      "viewport": {
+        "width": 375,
+        "height": 667
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 375,
+      "image_pixels": {
+        "width": 469,
+        "height": 834
+      },
+      "image_bytes": 85488,
+      "sha256": "65d93b6f3b5f56cbfb00030a8d76cf4aabcd06eb84b2ae237c1dfb98a448ff3d"
+    },
+    {
+      "id": "17-storage-error",
+      "title": "手机记录未同步的持续错误摘要",
+      "note": "390×844；在独立内存 storage 写入边界注入 QuotaExceededError，再手动更新模拟记录。",
+      "image": "images/17-storage-error.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 81768,
+      "sha256": "0007f41c19a9bc1331fba888e16b26ae856391a9e0bc961711cc69b5ccaef9de"
+    },
+    {
+      "id": "18-storage-error-details",
+      "title": "存储错误详情抽屉",
+      "note": "390×844；等待抽屉入场完成，完整错误来自隔离模拟故障，不是用户真机诊断结果。",
+      "image": "images/18-storage-error-details.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": "modal-shoot-details",
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 390,
+      "root_font": "16px",
+      "image_pixels": {
+        "width": 488,
+        "height": 1055
+      },
+      "image_bytes": 68418,
+      "sha256": "f25296ae11b81fcf7d73926921d9ad651856fe8a3b764676ebc115181ce7d715"
+    },
+    {
+      "id": "19-desktop-three-columns",
+      "title": "桌面三列工作台",
+      "note": "1280×800；同一套控件同时呈现现场、清单和记录。",
+      "image": "images/19-desktop-three-columns.png",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 1280,
+      "image_pixels": {
+        "width": 1600,
+        "height": 1000
+      },
+      "image_bytes": 299653,
+      "sha256": "0d99b2ae8f79636c8d435d68bff0ab1db7755797bf559c809c6de865835fe8ec"
+    },
+    {
+      "id": "20-large-text-pressure",
+      "title": "小屏大字压力下的首屏",
+      "note": "375×667；浏览器根字号 200%，现场页整区滚动；不是 iOS Dynamic Type 实机证明。",
+      "image": "images/20-large-text-pressure.png",
+      "viewport": {
+        "width": 375,
+        "height": 667
+      },
+      "theme": "light",
+      "view": "shoot",
+      "connected": true,
+      "phase": "idle",
+      "template_match": true,
+      "modal": null,
+      "observation": "已就绪（双机同拍），可以开始录像",
+      "record_disabled": false,
+      "record_mode": "start",
+      "root_scroll_width": 375,
+      "image_pixels": {
+        "width": 469,
+        "height": 834
+      },
+      "image_bytes": 70728,
+      "sha256": "048e698ce2141739e4263ce22ec45555815bd9a485569d4b0b9a4be9692f72fe"
+    }
+  ]
+}

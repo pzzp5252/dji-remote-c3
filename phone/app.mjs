@@ -8,6 +8,9 @@ export { DjiBleClient, BleClientError, UUIDS, KINDS };
 export const TEMPLATE_CACHE_KEY = 'dji-template-current';
 export const THEME_CACHE_KEY = 'dji-ui-theme';
 export const STALE_STATUS_MS = 3500;
+// Offline H.264 Baseline video: one black 16×16 frame, 1 second, no audio.
+const SCREEN_KEEPALIVE_VIDEO = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMObW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAjl0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAAAAABAAAAAAGxbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAQABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABXG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAARxzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFExhdmM2My4xLjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAK/+EAFmdCwArZHsBEAAADAAQAAAMACDxImSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAABQwAAAAAAAAABhzdHRzAAAAAAAAAAEAAAABAABAAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEAAAAUc3RzegAAAAAAAAKGAAAAAQAAABRzdGNvAAAAAAAAAAEAAAM+AAAAYXVkdGEAAABZbWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAsaWxzdAAAACSpdG9vAAAAHGRhdGEAAAABAAAAAExhdmY2My4xLjEwMQAAAAhmcmVlAAACjm1kYXQAAAJwBgX//2zcRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY1IHIzMjIyIGIzNTYwNWEgLSBILjI2NC9NUEVHLTQgQVZDIGNvZGVjIC0gQ29weWxlZnQgMjAwMy0yMDI1IC0gaHR0cDovL3d3dy52aWRlb2xhbi5vcmcveDI2NC5odG1sIC0gb3B0aW9uczogY2FiYWM9MCByZWY9MyBkZWJsb2NrPTE6MDowIGFuYWx5c2U9MHgxOjB4MTExIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0xLjAwOjAuMDAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0wIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS0yIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0xIHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAADmWIhAV///8PRQABQt+A';
+const POINT_NAME_MAX_LENGTH = 64;
 
 export const DEFAULT_TEMPLATE = Object.freeze({
   schema_version: 1,
@@ -226,6 +229,7 @@ export function foldEventsToTakes(events = []) {
         boot_id: evt.boot_id || existing?.boot_id || '',
         begin_mono_ms: evt.mono_ms ?? existing?.begin_mono_ms ?? null,
         end_mono_ms: existing?.end_mono_ms ?? null,
+        end_boot_id: existing?.end_boot_id ?? '',
         time_anchor: evt.time_anchor ?? existing?.time_anchor ?? null,
         discarded: existing?.discarded ?? false,
         reassigned: existing?.reassigned ?? false,
@@ -247,7 +251,7 @@ export function foldEventsToTakes(events = []) {
         command_id: '',
         source: '',
         participants: 0,
-        boot_id: evt.begin_boot_id || evt.boot_id || '',
+        boot_id: evt.begin_boot_id || '',
         begin_mono_ms: evt.begin_mono_ms ?? null,
         end_mono_ms: null,
         time_anchor: null,
@@ -261,6 +265,7 @@ export function foldEventsToTakes(events = []) {
       };
       existing.ended = true;
       existing.end_mono_ms = evt.mono_ms ?? null;
+      existing.end_boot_id = evt.boot_id || '';
       existing.complete = Boolean(evt.complete);
       existing.reason = evt.reason || '';
       existing.observation_lost = Boolean(evt.observation_lost);
@@ -325,9 +330,26 @@ export function escapeCsvCell(val) {
   return `"${str}"`;
 }
 
+function getTakeDurationMs(take) {
+  if (!take?.boot_id || !take.end_boot_id || take.boot_id !== take.end_boot_id ||
+      !Number.isFinite(take.begin_mono_ms) || !Number.isFinite(take.end_mono_ms) ||
+      take.end_mono_ms < take.begin_mono_ms) return null;
+  return take.end_mono_ms - take.begin_mono_ms;
+}
+
+function formatElapsedMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const seconds = Math.floor(ms / 1000);
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function findTemplateAction(template, templateId, actionId) {
+  if (!templateId || templateId !== template?.template_id) return null;
+  return template.actions?.find(action => action.action_id === actionId) || null;
+}
+
 export function exportLedgerCsv(ledger, template, { now = Date.now } = {}) {
   const takes = Array.isArray(ledger?.takes) ? ledger.takes : [];
-  const actionMap = new Map((template?.actions || []).map(a => [a.action_id, a]));
 
   const headers = [
     'take_id',
@@ -350,7 +372,7 @@ export function exportLedgerCsv(ledger, template, { now = Date.now } = {}) {
   const rows = [headers.map(escapeCsvCell).join(',')];
 
   for (const take of takes) {
-    const act = actionMap.get(take.action_id);
+    const act = findTemplateAction(template, take.template_id, take.action_id);
     const actName = act?.name || take.action_id || '';
     const pt = act?.points?.find(p => p.point_id === take.point_id);
     const ptName = pt?.name || (take.point_id ? `${take.point_id} (现场点位)` : '未指定');
@@ -363,10 +385,8 @@ export function exportLedgerCsv(ledger, template, { now = Date.now } = {}) {
     const camA = take.cameras?.[0];
     const camB = take.cameras?.[1];
 
-    let durationSec = '';
-    if (Number.isFinite(take.begin_mono_ms) && Number.isFinite(take.end_mono_ms)) {
-      durationSec = ((take.end_mono_ms - take.begin_mono_ms) / 1000).toFixed(1);
-    }
+    const durationMs = getTakeDurationMs(take);
+    const durationSec = durationMs !== null ? (durationMs / 1000).toFixed(1) : '';
 
     let timeAnchorUtc = '';
     if (Number.isFinite(take.time_anchor?.utc_ms) && take.time_anchor.utc_ms > 0) {
@@ -423,7 +443,7 @@ export function isValidPointId(id) {
   if (typeof id !== 'string') return false;
   const trimmed = id.trim();
   if (trimmed.length < 1 || trimmed.length > 16) return false;
-  return /^[A-Za-z0-9_-]+$/.test(trimmed);
+  return /^[A-Za-z0-9_\-]+$/.test(trimmed);
 }
 
 // === Template Normalization & Search/Filter ===
@@ -452,6 +472,7 @@ export function normalizeTemplate(rawTemplate) {
             .map(p => ({
               point_id: p.point_id.trim(),
               name: typeof p.name === 'string' && p.name.trim() ? p.name.trim() : p.point_id.trim(),
+              ...(p.orphan === true ? { orphan: true } : {}),
             }))
         : [],
     }))
@@ -501,20 +522,21 @@ export function matchesActionQuery(action, rawQuery) {
   return false;
 }
 
-export function filterActions(actions = [], { query = '', group = 'all', statusFilter = 'all', validCounts = new Map() } = {}) {
+export function filterActions(actions = [], { query = '', group = 'all', typeFilter = 'all', statusFilter = 'all', validCounts = new Map() } = {}) {
   const sorted = [...actions].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.action_id.localeCompare(b.action_id));
   return sorted.filter(action => {
     if (group && group !== 'all' && group !== '全部' && action.group !== group) {
       return false;
     }
-    const count = validCounts.get(action.action_id) || 0;
-    if (statusFilter === 'static' || statusFilter === '静态') {
+    if (typeFilter === 'static') {
       if (action.type !== 'static') return false;
-    } else if (statusFilter === 'dynamic' || statusFilter === '动态') {
+    } else if (typeFilter === 'dynamic') {
       if (action.type !== 'dynamic') return false;
-    } else if (statusFilter === 'unshot' || statusFilter === '未拍') {
+    }
+    const count = validCounts.get(action.action_id) || 0;
+    if (statusFilter === 'unshot') {
       if (count > 0) return false;
-    } else if (statusFilter === 'shot' || statusFilter === '已拍') {
+    } else if (statusFilter === 'shot') {
       if (count === 0) return false;
     }
     return matchesActionQuery(action, query);
@@ -1146,9 +1168,9 @@ export function getAppShellMarkup() {
           <span id="status-banner-detail"></span>
         </details>
       </div>
+      <button id="btn-dismiss-feedback" type="button" class="btn" aria-label="关闭提示">关闭</button>
     </header>
     <main class="bento-grid workbench-shell" data-bento-grid="true">
-      <p id="mock-notice" class="mock-notice" hidden>演示模式 · 不会连接真实设备</p>
       <section id="topbar-summary" class="topbar-summary bento-span-2" aria-label="遥控器与项目概览">
         <div class="topbar-summary-left">
           <span id="conn-badge" class="badge" data-state="disconnected">
@@ -1157,130 +1179,98 @@ export function getAppShellMarkup() {
           <span id="topbar-project-summary" class="topbar-meta-text">未创建项目</span>
         </div>
         <div class="topbar-summary-actions">
-          <button id="btn-toggle-settings" type="button" class="btn" aria-expanded="false">${ICONS.settings}<span id="btn-toggle-settings-label">设备与项目</span></button>
+          <button id="btn-toggle-settings" type="button" class="btn" aria-haspopup="dialog" aria-expanded="false">${ICONS.settings}<span id="btn-toggle-settings-label">连接与设置</span></button>
           <button id="btn-theme-toggle" type="button" class="btn btn-icon-only" aria-label="切换明暗主题">${ICONS.theme}</button>
         </div>
+        <div id="global-record-strip" class="global-record-strip" hidden>
+          <span id="global-record-text"></span>
+          <button id="btn-global-stop" type="button" class="btn btn-danger">停止录像</button>
+        </div>
+        <p id="mock-notice" class="mock-notice" hidden>演示模式 · 不会连接真实设备</p>
+        <div id="ledger-storage-details" hidden><p id="ledger-storage-notice" role="status"></p><button id="btn-ledger-details" type="button" class="btn">详情</button></div>
       </section>
       <div class="workbench-columns">
         <div id="view-shoot" class="view-panel" data-view-panel="shoot">
-          <section id="card-connection" class="bento-card bento-span-2" aria-labelledby="title-connection">
-            <div class="card-header">
-              <div class="card-title-group">
-                ${ICONS.bluetooth}
-                <div>
-                  <h2 id="title-connection" class="card-title">设备连接与项目设置</h2>
-                  <p id="template-subtitle" class="card-subtitle"></p>
+          <section id="card-record-ledger" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-record-ledger">
+            <div id="shoot-scroll-area">
+              <div id="shoot-camera-status">
+                <div class="card-header">
+                  <div class="card-title-group">${ICONS.record}<h2 id="title-record-ledger" class="card-title">录像与相机控制</h2></div>
+                  <span id="phase-badge" class="badge" data-state="disconnected">状态：待机</span>
+                </div>
+                <div id="target-alert-bar" class="target-alert-bar" role="alert" aria-live="polite" hidden></div>
+                <div class="camera-pair-grid">
+                  ${['a', 'b'].map((camera, index) => {
+                    const camLetter = index === 0 ? 'A' : 'B';
+                    return `
+                  <section id="card-cam-${camera}" class="bento-card bento-span-1 is-disconnected" aria-label="相机 ${camLetter}">
+                    <div class="card-header">
+                      <div id="cam-${camera}-title-wrap" class="card-title-group">${ICONS.camera}<h2 id="title-cam-${camera}" class="card-title">${camLetter}</h2></div>
+                      <span id="cam-${camera}-badge" class="badge" data-state="disconnected"><span class="badge-dot"></span><span id="cam-${camera}-badge-text">${camLetter}机未连接</span></span>
+                    </div>
+                    <div id="cam-${camera}-metrics" class="cam-metrics" hidden>
+                      <div class="kv-item"><span class="kv-label">电量</span><span id="cam-${camera}-battery" class="kv-value"></span></div>
+                    </div>
+                    <details id="cam-${camera}-details" class="device-details" hidden>
+                      <summary>相机详情</summary>
+                      <div class="kv-grid">
+                        <div class="kv-item"><span class="kv-label">拍摄状态</span><span id="cam-${camera}-mode" class="kv-value">未连接</span></div>
+                        <div class="kv-item"><span class="kv-label">最近一次状态更新</span><span id="cam-${camera}-fresh" class="kv-value">未连接</span></div>
+                        <div class="kv-item"><span class="kv-label">相机返回的计时数值</span><span id="cam-${camera}-record-time" class="kv-value">0</span></div>
+                      </div>
+                      <p class="card-subtitle">计时单位尚未确认，这个数值不作为录像时长。</p>
+                      <div class="cam-led-box"><span>遥控器指示灯</span><span id="cam-${camera}-led" class="badge"></span></div>
+                    </details>
+                  </section>`;
+                  }).join('')}
                 </div>
               </div>
             </div>
-            <div class="kv-grid">
-              <div class="kv-item"><span class="kv-label">当前项目</span><span id="meta-project-id" class="kv-value">尚未创建</span></div>
-              <div class="kv-item"><span class="kv-label">已拍段数</span><span id="meta-take-id" class="kv-value">0</span></div>
-            </div>
-            <div class="button-row">
-              <button id="btn-connect" type="button" class="btn btn-primary">${ICONS.bluetooth}<span id="btn-connect-label">连接遥控器</span></button>
-              <button id="btn-sync-log" type="button" class="btn" disabled>${ICONS.sync}<span>更新拍摄记录</span></button>
-              <label for="input-template-file" class="file-upload-label" role="button" tabindex="0">${ICONS.upload}<span>导入拍摄清单</span></label>
-              <input id="input-template-file" type="file" accept=".json,application/json" aria-label="选择拍摄清单文件" class="visually-hidden" />
-            </div>
-            <div id="init-project-box" class="init-box" hidden>
-              <h3 class="card-title">新建拍摄项目</h3>
-              <p class="card-subtitle">给这次拍摄起一个编号，方便之后在电脑上整理视频。可使用字母、数字、下划线或短横线。</p>
-              <div class="form-grid">
-                <label class="field-label" for="input-init-project-id"><span>项目编号</span><input id="input-init-project-id" type="text" class="input-field" maxlength="63" placeholder="输入本次拍摄的编号" /></label>
-                <label class="field-label" for="input-init-template-id"><span>拍摄清单编号</span><input id="input-init-template-id" type="text" class="input-field" maxlength="63" placeholder="输入拍摄清单编号" /></label>
+            <section id="card-current-action" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-current-action">
+              <div class="card-header">
+                <div class="card-title-group">${ICONS.step}<h2 id="title-current-action" class="card-title visually-hidden">当前拍摄内容</h2></div>
+                <div class="card-header-actions">
+                  <span id="action-pending-badge" class="badge" data-state="warn" hidden>正在保存动作，请稍候</span>
+                </div>
               </div>
-              <button id="btn-init-project" type="button" class="btn btn-primary">新建项目</button>
-            </div>
-            <details id="device-details" class="device-details">
-              <summary>设备详情</summary>
-              <div class="kv-grid">
-                <div class="kv-item"><span class="kv-label">拍摄清单编号</span><span id="meta-template-id" class="kv-value"></span></div>
-                <div class="kv-item"><span class="kv-label">设备已保存 / 手机已保存</span><span id="meta-event-seq" class="kv-value">0 / 0</span></div>
-                <div class="kv-item"><span class="kv-label">遥控器剩余空间</span><span id="meta-free-bytes" class="kv-value">未知</span></div>
-                <div class="kv-item"><span class="kv-label">时间校准与记录保存</span><span id="meta-time-sync" class="kv-value">未连接</span></div>
+              <div class="current-action-hero">
+                <div class="current-action-top">
+                  <div class="current-action-badges"><span id="confirmed-action-id" class="current-action-code">未选择</span><span id="confirmed-point-id" class="badge" hidden>不指定拍摄位置</span></div>
+                  <button id="btn-current-details" type="button" class="btn" aria-haspopup="dialog">展开</button>
+                </div>
+                <p id="confirmed-action-name" class="current-action-name">请从拍摄清单中选择一项</p>
               </div>
-              <div id="usb-reset-notice" class="notice-box" hidden>
-                <span>需要清空项目？</span>
-                <span class="card-subtitle">请先在电脑上备份，再连接电脑清空遥控器。手机上不能清空项目。</span>
+              <div class="button-row">
+                <button id="btn-prev-action" type="button" class="btn">${ICONS.prev}<span id="btn-prev-label">上一项</span></button>
+                <button id="btn-open-action-list" type="button" class="btn">挑动作</button>
+                <button id="btn-next-action" type="button" class="btn"><span id="btn-next-label">下一项</span>${ICONS.next}</button>
               </div>
-            </details>
-          </section>
-          <div class="ios-spacer"></div>
-          <section id="card-current-action" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-current-action">
-            <div class="card-header">
-              <div class="card-title-group">${ICONS.step}<h2 id="title-current-action" class="card-title">当前拍摄内容</h2></div>
-              <div class="card-header-actions">
-                <span id="action-pending-badge" class="badge" data-state="warn" hidden>正在保存动作，请稍候</span>
-                <button id="btn-open-action-list" type="button" class="btn">${ICONS.list}<span>挑动作 / 清单</span></button>
+              <div id="points-container" hidden>
+                <div class="card-header" style="margin-bottom: 4px;">
+                  <span class="kv-label">拍摄位置</span>
+                  <button id="btn-rename-point" type="button" class="btn btn-rename-point" hidden>补中文名</button>
+                  <button id="btn-trigger-add-point" type="button" class="btn-add-point" aria-label="现场新增点位">+ 新增</button>
+                </div>
+                <div id="point-rail-frame" data-overflow-start="false" data-overflow-end="false"><div id="point-pills" class="pill-strip"></div></div>
               </div>
-            </div>
-            <div class="current-action-hero">
-              <div class="current-action-top">
-                <div class="current-action-badges"><span id="confirmed-action-id" class="current-action-code">未选择</span><span id="confirmed-point-id" class="badge" hidden>不指定拍摄位置</span></div>
-                <div class="current-action-badges"><span id="confirmed-action-type" class="badge" hidden></span><span id="confirmed-action-group" class="badge" hidden></span></div>
-              </div>
-              <p id="confirmed-action-name" class="current-action-name">请从拍摄清单中选择一项</p>
-            </div>
-            <div id="points-container" hidden>
-              <div class="card-header" style="margin-bottom: 4px;">
-                <span class="kv-label">拍摄位置</span>
-                <button id="btn-trigger-add-point" type="button" class="btn-add-point" aria-label="现场新增点位">+ 新增</button>
-              </div>
-              <div id="point-pills" class="pill-strip"></div>
-            </div>
-            <div class="button-row">
-              <button id="btn-prev-action" type="button" class="btn">${ICONS.prev}<span id="btn-prev-label">上一项</span></button>
-              <button id="btn-next-action" type="button" class="btn"><span id="btn-next-label">下一项</span>${ICONS.next}</button>
-            </div>
-          </section>
-          <div class="ios-spacer"></div>
-          <section id="card-record-ledger" class="bento-card bento-span-2 bento-card-primary" aria-labelledby="title-record-ledger">
-            <div class="card-header">
-              <div class="card-title-group">${ICONS.record}<h2 id="title-record-ledger" class="card-title">录像与相机控制</h2></div>
-              <span id="phase-badge" class="badge" data-state="disconnected">状态：待机</span>
-            </div>
-            <div id="target-alert-bar" class="target-alert-bar" role="alert" aria-live="polite" hidden></div>
+            </section>
+            <div id="shoot-record-controls">
             <div id="target-camera-strip" class="target-camera-strip" role="group" aria-label="选择本段使用的相机">
               <button id="btn-target-both" type="button" class="target-cam-btn is-active" data-target-cameras="3" aria-pressed="true">双机同拍</button>
               <button id="btn-target-a" type="button" class="target-cam-btn" data-target-cameras="1" aria-pressed="false">只拍 A 机</button>
               <button id="btn-target-b" type="button" class="target-cam-btn" data-target-cameras="2" aria-pressed="false">只拍 B 机</button>
             </div>
-            <div class="record-phase-bar"><span id="record-observation-text">请先连接遥控器</span><span id="active-take-badge" class="badge" hidden></span></div>
+            <div class="record-phase-bar"><span id="record-observation-text">请先连接遥控器</span><span id="active-take-badge" class="badge" hidden></span><span id="record-elapsed" aria-label="本段计时">本段计时：待确认</span></div>
             <button id="btn-record-main" type="button" class="btn btn-ready record-cta-btn" data-mode="start">
               <span id="btn-record-icon">${ICONS.record}</span><span id="btn-record-label">开始录像</span>
             </button>
-            <div class="camera-pair-grid">
-              ${['a', 'b'].map((camera, index) => {
-                const camLetter = index === 0 ? 'A' : 'B';
-                return `
-              <section id="card-cam-${camera}" class="bento-card bento-span-1 is-disconnected" aria-labelledby="title-cam-${camera}">
-                <div class="card-header">
-                  <div id="cam-${camera}-title-wrap" class="card-title-group" hidden>${ICONS.camera}<h2 id="title-cam-${camera}" class="card-title">相机 ${camLetter}</h2></div>
-                  <span id="cam-${camera}-badge" class="badge" data-state="disconnected"><span class="badge-dot"></span><span id="cam-${camera}-badge-text">${camLetter}机未连接</span></span>
-                </div>
-                <div id="cam-${camera}-metrics" class="cam-metrics" hidden>
-                  <div class="kv-item"><span class="kv-label">电量</span><span id="cam-${camera}-battery" class="kv-value"></span></div>
-                  <div class="kv-item"><span class="kv-label">拍摄状态</span><span id="cam-${camera}-mode" class="kv-value">未连接</span></div>
-                </div>
-                <details id="cam-${camera}-details" class="device-details" hidden>
-                  <summary>相机详情</summary>
-                  <div class="kv-grid">
-                    <div class="kv-item"><span class="kv-label">最近一次状态更新</span><span id="cam-${camera}-fresh" class="kv-value">未连接</span></div>
-                    <div class="kv-item"><span class="kv-label">相机返回的计时数值</span><span id="cam-${camera}-record-time" class="kv-value">0</span></div>
-                  </div>
-                  <p class="card-subtitle">计时单位尚未确认，这个数值不作为录像时长。</p>
-                  <div class="cam-led-box"><span>遥控器指示灯</span><span id="cam-${camera}-led" class="badge"></span></div>
-                </details>
-              </section>`;
-              }).join('')}
-            </div>
+            <p id="screen-awake-notice" class="card-subtitle" role="status"></p>
             <div id="recent-take-bar" class="recent-take-bar">
-              <span id="recent-take-summary" class="recent-take-text">最近一段：还没有拍摄记录</span>
-              <button id="btn-open-records" type="button" class="btn">${ICONS.history}<span>已拍记录</span></button>
+              <span id="recent-take-summary" class="recent-take-text"><span id="recent-take-identity">最近：还没有拍摄记录</span><span id="recent-take-result"></span></span>
+              <button id="btn-open-records" type="button" class="btn">${ICONS.history}<span>改归属</span></button>
+            </div>
             </div>
           </section>
-          <div class="ios-spacer"></div>
         </div>
         <div id="view-list" class="view-panel" data-view-panel="list" hidden>
           <section id="card-action-search" class="bento-card bento-span-2" aria-labelledby="title-action-search">
@@ -1301,7 +1291,8 @@ export function getAppShellMarkup() {
               <p class="search-help-text">输入 27 即可找到 D27，也可输入拍摄内容名称、区域或位置进行查找。</p>
             </details>
             <div id="filter-group-pills" class="pill-strip" role="group" aria-label="按区域筛选"></div>
-            <div id="filter-status-pills" class="pill-strip" role="group" aria-label="按类别和已拍情况筛选"></div>
+            <div id="filter-type-pills" class="pill-strip" role="group" aria-label="按动作类型筛选"></div>
+            <div id="filter-status-pills" class="pill-strip" role="group" aria-label="按拍摄状态筛选"></div>
             <div id="action-list" class="action-list" role="list"></div>
           </section>
         </div>
@@ -1311,7 +1302,7 @@ export function getAppShellMarkup() {
               <div class="card-title-group">${ICONS.history}<h2 id="title-records-history" class="card-title">已拍记录</h2></div>
               <div class="card-header-actions">
                 <span id="takes-count-badge" class="badge">共 0 段</span>
-                <button id="btn-records-sync" type="button" class="btn" disabled>${ICONS.sync}<span>更新拍摄记录</span></button>
+                <button id="btn-records-sync" type="button" class="btn" disabled>${ICONS.sync}<span>更新拍摄记录</span></button><span id="records-sync-status" role="status"></span>
                 <button id="btn-records-back-shoot" type="button" class="btn">${ICONS.prev}<span>返回现场拍摄</span></button>
               </div>
             </div>
@@ -1332,15 +1323,64 @@ export function getAppShellMarkup() {
       <nav id="bottom-view-nav" class="bottom-view-nav" aria-label="工作台视图切换">
         <button id="nav-btn-shoot" type="button" class="view-nav-btn is-active" data-view-nav="shoot" aria-pressed="true">${ICONS.record}<span>现场拍摄</span></button>
         <button id="nav-btn-list" type="button" class="view-nav-btn" data-view-nav="list" aria-pressed="false">${ICONS.list}<span>拍摄清单</span></button>
-        <button id="nav-btn-records" type="button" class="view-nav-btn" data-view-nav="records" aria-pressed="false">${ICONS.history}<span>已拍记录</span></button>
+        <button id="nav-btn-records" type="button" class="view-nav-btn" data-view-nav="records" aria-pressed="false">${ICONS.history}<span>已拍记录</span><span id="records-sync-hint" role="status"></span></button>
       </nav>
+      <dialog id="modal-settings" class="ios-bottom-sheet" aria-labelledby="title-connection">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="sheet-header">
+          <button id="btn-settings-close" type="button" class="btn" aria-label="关闭设置">关闭</button>
+        </div>
+        <section id="card-connection" class="bento-card bento-span-2" aria-labelledby="title-connection">
+          <div class="card-header">
+            <div class="card-title-group">
+              ${ICONS.bluetooth}
+              <div>
+                <h2 id="title-connection" class="card-title">设备连接与项目设置</h2>
+                <p id="template-subtitle" class="card-subtitle"></p>
+              </div>
+            </div>
+          </div>
+          <div class="kv-grid">
+            <div class="kv-item"><span class="kv-label">当前项目</span><span id="meta-project-id" class="kv-value">尚未创建</span></div>
+            <div class="kv-item"><span class="kv-label">记录段数</span><span id="meta-take-id" class="kv-value">0</span></div>
+          </div>
+          <div class="button-row">
+            <button id="btn-connect" type="button" class="btn btn-primary">${ICONS.bluetooth}<span id="btn-connect-label">连接遥控器</span></button>
+            <button id="btn-sync-log" type="button" class="btn" disabled>${ICONS.sync}<span>更新拍摄记录</span></button>
+            <button id="btn-import-template" type="button" class="btn">${ICONS.upload}<span>导入拍摄清单</span></button>
+            <input id="input-template-file" type="file" accept=".json,application/json" aria-label="选择拍摄清单文件" class="visually-hidden" />
+          </div>
+          <div id="init-project-box" class="init-box" hidden>
+            <h3 class="card-title">新建拍摄项目</h3>
+            <p class="card-subtitle">给这次拍摄起一个编号，方便之后在电脑上整理视频。可使用字母、数字、下划线或短横线。</p>
+            <div class="form-grid">
+              <label class="field-label" for="input-init-project-id"><span>项目编号</span><input id="input-init-project-id" type="text" class="input-field" maxlength="63" placeholder="输入本次拍摄的编号" /></label>
+              <label class="field-label" for="input-init-template-id"><span>拍摄清单编号</span><input id="input-init-template-id" type="text" class="input-field" maxlength="63" placeholder="输入拍摄清单编号" /></label>
+            </div>
+            <button id="btn-init-project" type="button" class="btn btn-primary">新建项目</button>
+          </div>
+          <details id="device-details" class="device-details">
+            <summary>设备详情</summary>
+            <div class="kv-grid">
+              <div class="kv-item"><span class="kv-label">拍摄清单编号</span><span id="meta-template-id" class="kv-value"></span></div>
+              <div class="kv-item"><span class="kv-label">设备已保存 / 手机已保存</span><span id="meta-event-seq" class="kv-value">0 / 0</span></div>
+              <div class="kv-item"><span class="kv-label">遥控器剩余空间</span><span id="meta-free-bytes" class="kv-value">未知</span></div>
+              <div class="kv-item"><span class="kv-label">时间校准与记录保存</span><span id="meta-time-sync" class="kv-value">未连接</span></div>
+            </div>
+            <div id="usb-reset-notice" class="notice-box" hidden>
+              <span>需要清空项目？</span>
+              <span class="card-subtitle">请先在电脑上备份，再连接电脑清空遥控器。手机上不能清空项目。</span>
+            </div>
+          </details>
+        </section>
+      </dialog>
       <dialog id="modal-add-point" class="ios-bottom-sheet" aria-labelledby="modal-add-point-title">
         <div class="sheet-handle" aria-hidden="true"></div>
         <h3 id="modal-add-point-title" class="sheet-title">现场新增点位</h3>
         <form id="form-add-point" class="sheet-form" method="dialog">
           <label class="field-label" for="input-add-point-id">
             <span>点位编号 (如 P01, P02, 必填 ASCII 字母数字)</span>
-            <input id="input-add-point-id" type="text" class="input-field" maxlength="16" placeholder="P01" autocomplete="off" pattern="^[A-Za-z0-9_-]+$" inputmode="text" aria-describedby="msg-add-point-error" required />
+            <input id="input-add-point-id" type="text" class="input-field" maxlength="16" placeholder="P01" autocomplete="off" pattern="^[A-Za-z0-9_\-]+$" inputmode="text" aria-describedby="msg-add-point-error" required />
           </label>
           <label class="field-label" for="input-add-point-name">
             <span>点位名称 (可选，如 传递口操作面)</span>
@@ -1352,6 +1392,13 @@ export function getAppShellMarkup() {
             <button id="btn-confirm-add-point" type="submit" class="btn btn-primary">保存并选中</button>
           </div>
         </form>
+      </dialog>
+      <dialog id="modal-shoot-details" class="ios-bottom-sheet" aria-labelledby="shoot-details-title">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <h3 id="shoot-details-title" class="sheet-title"></h3>
+        <dl id="shoot-details-content"><dt>类型</dt><dd id="confirmed-action-type"></dd><dt>区域</dt><dd id="confirmed-action-group"></dd></dl>
+        <div id="shoot-orphan-points"></div>
+        <button id="btn-shoot-details-close" type="button" class="btn">关闭</button>
       </dialog>
     </main>
   `;
@@ -1435,11 +1482,11 @@ export function createApp({
     activeView: 'shoot', // 'shoot' | 'list' | 'records'
     desktopMode: false,
     viewScrollTop: { shoot: 0, list: 0, records: 0 },
-    settingsExpanded: false,
     template: normalizeTemplate(DEFAULT_TEMPLATE),
     templateVersion: 1,
     searchQuery: '',
     groupFilter: 'all',
+    typeFilter: 'all',
     statusFilter: 'all',
     pendingSelect: null, // { action_id, point_id, target_cameras } while awaiting SELECT_ACTION ACK
     pendingStartCommandId: null,
@@ -1447,6 +1494,10 @@ export function createApp({
     reassignDrafts: new Map(), // take_id -> { action_id, point_id }
     lastBackupPayload: null,
     lastErrorCode: '',
+    templateSaveError: false,
+    templateLoadError: null,
+    ledgerReadError: null, // { project_id, code, message }; cleared only by a successful local read
+    ledgerSyncError: null, // same shape; cleared only after the current project is fully synced
     status: {
       project_id: '',
       template_id: DEFAULT_TEMPLATE.template_id,
@@ -1479,20 +1530,105 @@ export function createApp({
     },
   };
 
+  function templateMatchesDevice() {
+    return !state.status.project_id || Boolean(state.status.template_id &&
+      state.template.template_id === state.status.template_id);
+  }
+  function currentTemplateAction(actionId = state.status.action_id) {
+    return findTemplateAction(state.template,
+      state.status.project_id ? state.status.template_id : state.template.template_id, actionId);
+  }
+  function templateMismatchMessage() {
+    return `清单不匹配：设备 ${state.status.template_id || '未知'}，手机 ${state.template.template_id}；请导入设备项目对应的清单后再拍摄或修改归属`;
+  }
+  function rejectTemplateMismatch() {
+    if (templateMatchesDevice()) return false;
+    setBanner(templateMismatchMessage(), { tone: 'warn' });
+    render();
+    return true;
+  }
+
   let pendingStart = null;
   let pendingStop = null;
   let statusVersion = 0;
   let connectionVersion = 0;
+  let projectVersion = 0;
+  let destroyed = false;
+  let hardwareClockAnchor = null;
+  let shootDetailsContext = null;
+  const monotonicNow = () => win?.performance?.now?.() ?? 0;
 
   // Keyed DOM caches so interactive controls are NEVER destroyed on tick/STATUS
   const pointPillCache = {
     signature: '',
     nodesByPointId: new Map(),
   };
+  let pointRevealRaf = null;
+  let pointRevealPending = false;
+  let pointRevealIdentity = '';
+  let pointFocusRaf = null;
+  function updatePointOverflowMarkers() {
+    const rail = el('point-pills');
+    const frame = el('point-rail-frame');
+    if (!rail || !frame) return;
+    frame.dataset.overflowStart = rail.scrollLeft > 1 ? 'true' : 'false';
+    frame.dataset.overflowEnd = rail.scrollWidth - rail.clientWidth - rail.scrollLeft > 1 ? 'true' : 'false';
+  }
+  function revealButtonInRail(rail, button) {
+    if (!rail || !button || destroyed || el('view-shoot')?.hidden) return;
+    const outer = rail.getBoundingClientRect();
+    const inner = button.getBoundingClientRect();
+    const outerWidth = outer.width ?? (outer.right - outer.left);
+    const innerWidth = inner.width ?? (inner.right - inner.left);
+    if (!outerWidth || !innerWidth) return;
+    const left = outer.left + 12 - inner.left;
+    const right = inner.right - (outer.right - 12);
+    if (left > 0) rail.scrollLeft -= left;
+    else if (right > 0) rail.scrollLeft += right;
+    updatePointOverflowMarkers();
+  }
+  function schedulePointReveal() {
+    pointRevealPending = true;
+    if (pointRevealRaf !== null || destroyed || el('view-shoot').hidden) return;
+    const reveal = () => {
+      pointRevealRaf = null;
+      if (destroyed || el('view-shoot').hidden) return;
+      pointRevealPending = false;
+      const rail = el('point-pills');
+      const button = pointPillCache.nodesByPointId.get(state.status.point_id || '');
+      if (rail && button) {
+        revealButtonInRail(rail, button);
+      } else {
+        updatePointOverflowMarkers();
+      }
+    };
+    if (typeof win?.requestAnimationFrame === 'function') pointRevealRaf = win.requestAnimationFrame(reveal);
+    else reveal();
+  }
+  const onPointFocusIn = e => {
+    const button = e.target?.closest?.('.point-pill');
+    const rail = el('point-pills');
+    if (!button || !rail || destroyed || el('view-shoot')?.hidden || !rail.contains(button)) return;
+    if (pointFocusRaf !== null && typeof win?.cancelAnimationFrame === 'function') {
+      win.cancelAnimationFrame(pointFocusRaf);
+      pointFocusRaf = null;
+    }
+    const reveal = () => {
+      pointFocusRaf = null;
+      if (destroyed || el('view-shoot')?.hidden) return;
+      revealButtonInRail(rail, button);
+    };
+    if (typeof win?.requestAnimationFrame === 'function') {
+      pointFocusRaf = win.requestAnimationFrame(reveal);
+    } else {
+      reveal();
+    }
+  };
   const groupPillCache = {
     signature: '',
     nodesByGroup: new Map(),
   };
+  const typePillNodes = new Map();
   const statusPillNodes = new Map();
   const actionRowCache = new Map(); // action_id -> { btn, idSpan, titleSpan, metaSpan, pendingBadge, countBadge }
   let emptyActionHintEl = null;
@@ -1513,8 +1649,33 @@ export function createApp({
     }
   }
 
+  let feedbackTimer = null;
+  let feedbackDismissed = false;
+  let feedbackCode = '';
+  let feedbackVersion = 0;
+  function renderFeedbackVisibility() {
+    if (!bannerEl) return;
+    const duplicate = Boolean(currentLedgerFailure()) &&
+      ['ledger_sync_failed', 'ledger_not_updated', 'ledger_unavailable'].includes(feedbackCode);
+    const hidden = feedbackDismissed || bannerEl.dataset.tone === 'idle' || duplicate;
+    bannerEl.hidden = hidden;
+    bannerEl.parentElement.hidden = hidden;
+    updateShootOverflowMode();
+  }
+  el('btn-dismiss-feedback')?.addEventListener('click', () => {
+    feedbackDismissed = true;
+    if (feedbackTimer !== null) win?.clearTimeout(feedbackTimer);
+    feedbackTimer = null;
+    renderFeedbackVisibility();
+  });
+
   function setBanner(message, { tone = 'idle', code = '', detail = '' } = {}) {
     if (!bannerEl) return;
+    if (feedbackTimer !== null) win?.clearTimeout(feedbackTimer);
+    feedbackTimer = null;
+    feedbackDismissed = false;
+    feedbackCode = code;
+    const version = ++feedbackVersion;
     const isError = tone === 'error';
     const errCode = isError ? (code || '') : '';
     const errDetail = isError ? (detail || '') : '';
@@ -1533,6 +1694,13 @@ export function createApp({
       }
     }
     if (isError && errCode) state.lastErrorCode = errCode;
+    renderFeedbackVisibility();
+    if (tone === 'ok') feedbackTimer = win?.setTimeout(() => {
+      if (destroyed || version !== feedbackVersion) return;
+      feedbackTimer = null;
+      feedbackDismissed = true;
+      renderFeedbackVisibility();
+    }, 2000) ?? null;
   }
 
   function handleError(contextLabel, error) {
@@ -1571,6 +1739,7 @@ export function createApp({
     state.viewScrollTop[prevView] = prevScroll;
     state.activeView = viewName;
     render();
+    if (viewName === 'shoot') schedulePointReveal();
     const nextScroll = state.viewScrollTop[viewName] ?? 0;
     const nextPanel = el(`view-${viewName}`);
     if (state.desktopMode && nextPanel && win) {
@@ -1584,136 +1753,323 @@ export function createApp({
     }
   }
 
-  function openDialog(dialog) {
-    if (!dialog) return;
-    if (typeof dialog.showModal === 'function') {
-      try {
-        dialog.showModal();
-        return;
-      } catch (_) {}
+  let shootResizeObserver = null;
+  function updateShootOverflowMode() {
+    const view = el('view-shoot');
+    const controls = el('shoot-record-controls');
+    const currentAction = el('card-current-action');
+    if (!view || !controls || !currentAction) return;
+    let overflow = false;
+    if (!isDesktopLayout() && !view.hidden) {
+      const fontSize = parseFloat(win?.getComputedStyle?.(doc.documentElement).fontSize);
+      if (view.clientHeight <= 0 || !Number.isFinite(fontSize)) return;
+      overflow = controls.scrollHeight + currentAction.scrollHeight + 8 * fontSize > view.clientHeight;
     }
-    dialog.setAttribute('open', '');
+    if (view.classList.contains('is-overflow-layout') !== overflow) {
+      view.classList.toggle('is-overflow-layout', overflow);
+      root.classList.toggle('is-overflow-layout', overflow);
+    }
+  }
+  if (typeof win?.ResizeObserver === 'function') {
+    shootResizeObserver = new win.ResizeObserver(updateShootOverflowMode);
+    shootResizeObserver.observe(el('view-shoot'));
+    shootResizeObserver.observe(el('shoot-record-controls'));
+    shootResizeObserver.observe(el('card-current-action'));
   }
 
-  function closeDialog(dialog) {
-    if (!dialog) return;
-    if (typeof dialog.close === 'function') {
-      try {
-        dialog.close();
-        return;
-      } catch (_) {}
+  const dialogRecords = new WeakMap();
+  const sheetViewport = win?.visualViewport;
+  function updateSheetViewport() {
+    for (const id of ['modal-add-point', 'modal-shoot-details', 'modal-settings']) {
+      const sheet = el(id);
+      sheet?.style.setProperty('--sheet-viewport-height', `${sheetViewport?.height ?? win?.innerHeight ?? 0}px`);
+      sheet?.style.setProperty('--sheet-viewport-top', `${sheetViewport?.offsetTop ?? 0}px`);
     }
-    dialog.removeAttribute('open');
   }
-
-  let wakeLockSentinel = null;
-  let keepAliveVideoEl = null;
-
-  async function acquireWakeLock() {
-    if (wakeLockSentinel && !wakeLockSentinel.released) return;
-    const nav = win?.navigator || (typeof navigator !== 'undefined' ? navigator : null);
-    if (nav?.wakeLock && typeof nav.wakeLock.request === 'function') {
-      try {
-        const sentinel = await nav.wakeLock.request('screen');
-        wakeLockSentinel = sentinel;
-        sentinel.addEventListener?.('release', () => {
-          if (wakeLockSentinel === sentinel) wakeLockSentinel = null;
-        });
-        return;
-      } catch (_) {}
+  sheetViewport?.addEventListener?.('resize', updateSheetViewport);
+  sheetViewport?.addEventListener?.('scroll', updateSheetViewport);
+  function openDialog(dialog, { returnFocus = doc.activeElement } = {}) {
+    if (!dialog || destroyed || dialog.open || dialogRecords.get(dialog)?.closingPromise) return;
+    for (const otherId of ['modal-add-point', 'modal-shoot-details', 'modal-settings']) {
+      if (otherId === dialog.id) continue;
+      const other = el(otherId);
+      if (other?.open) void closeDialog(other, { immediate: true });
     }
-    const isJsDom = /jsdom/i.test(nav?.userAgent || '');
-    if (!isJsDom && doc?.createElement) {
-      if (keepAliveVideoEl) {
-        try {
-          keepAliveVideoEl.play?.().catch(() => {});
-        } catch (_) {}
-      } else if (doc.body) {
-        try {
-          keepAliveVideoEl = doc.createElement('video');
-          keepAliveVideoEl.setAttribute('playsinline', '');
-          keepAliveVideoEl.setAttribute('muted', '');
-          keepAliveVideoEl.setAttribute('loop', '');
-          keepAliveVideoEl.style.position = 'fixed';
-          keepAliveVideoEl.style.width = '1px';
-          keepAliveVideoEl.style.height = '1px';
-          keepAliveVideoEl.style.opacity = '0.01';
-          keepAliveVideoEl.style.pointerEvents = 'none';
-          keepAliveVideoEl.src = 'data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAW1wNDJpc29tYXZjMQAAADFtb292AAAAbG12aGQAAAAA117F89dex/MAAAAAAA+gAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAA==';
-          doc.body.appendChild(keepAliveVideoEl);
-          keepAliveVideoEl.play?.().catch(() => {});
-        } catch (_) {}
+    dialogRecords.set(dialog, { returnFocus, closingPromise: null, animation: null });
+    updateSheetViewport();
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+    if (dialog.id === 'modal-settings') {
+      const btn = el('btn-toggle-settings');
+      if (btn) {
+        btn.setAttribute('aria-expanded', 'true');
+        btn.classList.add('is-active');
       }
     }
+  }
+  function closeDialog(dialog, { immediate = false } = {}) {
+    if (!dialog) return Promise.resolve();
+    const record = dialogRecords.get(dialog);
+    const finish = () => {
+      if (record && dialogRecords.get(dialog) !== record) return;
+      if (dialog.open) {
+        if (typeof dialog.close === 'function') dialog.close();
+        else { dialog.removeAttribute('open'); dialog.dispatchEvent(new win.Event('close')); }
+      }
+      if (dialog.id === 'modal-settings') {
+        const btn = el('btn-toggle-settings');
+        if (btn) {
+          btn.setAttribute('aria-expanded', 'false');
+          btn.classList.remove('is-active');
+        }
+      }
+    };
+    if (immediate) {
+      record?.animation?.cancel?.();
+      finish();
+      return record?.closingPromise || Promise.resolve();
+    }
+    if (record?.closingPromise) return record.closingPromise;
+    if (!dialog.open || !record || typeof dialog.animate !== 'function' ||
+        win?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) {
+      finish();
+      return Promise.resolve();
+    }
+    const computed = win.getComputedStyle(dialog);
+    try {
+      record.animation = dialog.animate([
+        { transform: computed.transform === 'none' ? 'translateY(0)' : computed.transform, opacity: computed.opacity || '1' },
+        { transform: 'translateY(100%)', opacity: '0' },
+      ], { duration: 160, easing: 'ease-in', fill: 'forwards' });
+      record.closingPromise = Promise.resolve(record.animation.finished).catch(() => {}).then(() => {
+        finish();
+        record.animation?.cancel?.();
+      });
+      return record.closingPromise;
+    } catch { finish(); return Promise.resolve(); }
+  }
+
+  let screenAwakeMode = 'idle';
+  let screenAwakeMessage = '';
+  function setScreenAwakeNotice(mode, message) {
+    screenAwakeMode = mode;
+    screenAwakeMessage = message;
+    const notice = el('screen-awake-notice');
+    if (notice) {
+      notice.dataset.mode = mode;
+      notice.hidden = mode === 'idle' || mode === 'system';
+      setTextIfChanged(notice, message);
+    }
+  }
+  let wakeLockSentinel = null;
+  let wakeLockRequest = null;
+  let keepAliveVideoEl = null;
+  let keepAlivePlay = null;
+  let wakeLockWanted = false;
+  let wakeLockGeneration = 0;
+
+  function showManualScreenNotice() {
+    if (wakeLockSentinel && !wakeLockSentinel.released) return;
+    setScreenAwakeNotice('manual', '请手动保持屏幕常亮');
+  }
+
+  // Invoke play synchronously in the START gesture, before awaiting BLE or WakeLock.
+  function playKeepAliveVideo() {
+    if (keepAlivePlay) return keepAlivePlay;
+    if (keepAliveVideoEl?.paused === false) return Promise.resolve(true);
+    const nav = win?.navigator;
+    if (/jsdom/i.test(nav?.userAgent || '') || !doc?.body) return Promise.resolve(false);
+    const generation = wakeLockGeneration;
+    try {
+      if (!keepAliveVideoEl) {
+        const video = doc.createElement('video');
+        video.setAttribute('playsinline', '');
+        video.setAttribute('aria-hidden', 'true');
+        video.muted = true;
+        video.loop = true;
+        video.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none';
+        video.src = SCREEN_KEEPALIVE_VIDEO;
+        doc.body.appendChild(video);
+        keepAliveVideoEl = video;
+      }
+      const video = keepAliveVideoEl;
+      const playback = video.play();
+      if (!playback || typeof playback.then !== 'function') {
+        showManualScreenNotice();
+        return Promise.resolve(false);
+      }
+      const operation = Promise.resolve(playback).then(() => {
+        if (destroyed || generation !== wakeLockGeneration || !wakeLockWanted) {
+          video.pause?.();
+          video.remove?.();
+          return false;
+        }
+        // Playback is observable; Bluefy's screen-awake effect still needs a real device.
+        if (!wakeLockSentinel) setScreenAwakeNotice('video', '辅助视频已播放，防息屏请现场确认');
+        return true;
+      }, () => {
+        if (!destroyed && generation === wakeLockGeneration && wakeLockWanted) showManualScreenNotice();
+        return false;
+      }).finally(() => {
+        if (keepAlivePlay === operation) keepAlivePlay = null;
+      });
+      keepAlivePlay = operation;
+      return operation;
+    } catch {
+      showManualScreenNotice();
+      return Promise.resolve(false);
+    }
+  }
+
+  function acquireWakeLock() {
+    if (destroyed || !state.connected) return Promise.resolve(false);
+    wakeLockWanted = true;
+    if (wakeLockSentinel && !wakeLockSentinel.released) return Promise.resolve(true);
+    if (wakeLockRequest) return wakeLockRequest;
+    const generation = wakeLockGeneration;
+    const nav = win?.navigator || (typeof navigator !== 'undefined' ? navigator : null);
+    if (!nav?.wakeLock?.request) return playKeepAliveVideo();
+    // request is called now; ownership is installed before any awaited completion.
+    const operation = (async () => {
+      try {
+        const sentinel = await nav.wakeLock.request('screen');
+        if (destroyed || !wakeLockWanted || generation !== wakeLockGeneration) {
+          await sentinel.release();
+          return false;
+        }
+        wakeLockSentinel = sentinel;
+        sentinel.addEventListener?.('release', () => {
+          if (wakeLockSentinel === sentinel) {
+            wakeLockSentinel = null;
+            if (wakeLockWanted) showManualScreenNotice();
+          }
+        });
+        setScreenAwakeNotice('system', '已申请系统保持亮屏');
+        return true;
+      } catch {
+        if (!destroyed && wakeLockWanted && generation === wakeLockGeneration) return playKeepAliveVideo();
+        return false;
+      }
+    })();
+    wakeLockRequest = operation;
+    void operation.finally(() => { if (wakeLockRequest === operation) wakeLockRequest = null; });
+    return operation;
   }
 
   async function releaseWakeLock() {
-    if (wakeLockSentinel) {
-      try {
-        await wakeLockSentinel.release();
-      } catch (_) {}
-      wakeLockSentinel = null;
+    wakeLockWanted = false;
+    wakeLockGeneration += 1;
+    // Detach ownership before await so old release cannot clear a newer sentinel.
+    wakeLockRequest = null;
+    const sentinel = wakeLockSentinel;
+    wakeLockSentinel = null;
+    const video = keepAliveVideoEl;
+    keepAliveVideoEl = null;
+    keepAlivePlay = null;
+    if (video) {
+      try { video.pause?.(); video.remove?.(); } catch {}
     }
-    if (keepAliveVideoEl) {
-      try {
-        const isJsDom = /jsdom/i.test(win?.navigator?.userAgent || '');
-        if (!isJsDom) keepAliveVideoEl.pause?.();
-        keepAliveVideoEl.remove?.();
-      } catch (_) {}
-      keepAliveVideoEl = null;
-    }
+    setScreenAwakeNotice('idle', '未申请保持亮屏');
+    if (sentinel) { try { await sentinel.release(); } catch {} }
   }
 
   function harvestOrphanPointsFromLedger() {
-    if (!state.ledger?.takes || !state.template?.actions) return;
+    state.templateSaveError = false;
+    if (!state.ledger?.takes || !state.template?.actions) return true;
+    const candidate = normalizeTemplate(state.template);
     let harvestedAny = false;
     for (const take of state.ledger.takes) {
-      const cleanPid = typeof take.point_id === 'string' ? take.point_id.trim() : '';
-      if (take.action_id && cleanPid && isValidPointId(cleanPid)) {
-        const action = state.template.actions.find(a => a.action_id === take.action_id);
-        if (action) {
-          action.points = action.points || [];
-          if (!action.points.some(p => (p.point_id || '').toUpperCase() === cleanPid.toUpperCase())) {
-            action.points.push({
-              point_id: cleanPid,
-              name: `${cleanPid} (现场补录)`,
-              orphan: true,
-            });
-            harvestedAny = true;
-          }
-        }
+      const cleanPid = typeof take.point_id === 'string' ? take.point_id : '';
+      if (take.template_id !== candidate.template_id || !isValidAsciiId(cleanPid, 31)) continue;
+      const action = candidate.actions.find(a => a.action_id === take.action_id);
+      if (action && !action.points.some(p => p.point_id.toUpperCase() === cleanPid.toUpperCase())) {
+        action.points.push({ point_id: cleanPid, name: `${cleanPid} (现场补录)`, orphan: true });
+        harvestedAny = true;
       }
     }
     if (harvestedAny) {
-      state.templateVersion += 1;
       try {
-        storage.setItem(TEMPLATE_CACHE_KEY, JSON.stringify(state.template));
-      } catch (_) {}
+        storage.setItem(TEMPLATE_CACHE_KEY, JSON.stringify(candidate));
+      } catch (error) {
+        state.templateSaveError = true;
+        setBanner('历史点位未保存，请腾出手机存储空间后更新记录', {
+          tone: 'error', code: 'template_not_saved', detail: error?.message || '',
+        });
+        return false;
+      }
+      state.template = candidate;
+      state.templateVersion += 1;
     }
+    return true;
   }
 
   function refreshLocalLedger(projectId = state.status.project_id) {
+    if (state.ledger.project_id !== projectId) {
+      state.ledgerReadError = null;
+      state.ledgerSyncError = null;
+      state.lastBackupPayload = null;
+      state.editingReassignTakeId = null;
+      state.reassignDrafts.clear();
+      takeItemCache.clear();
+    }
     if (!projectId) {
       state.ledger = { project_id: '', after_seq: 0, events: [], takes: [], validCounts: new Map() };
+      state.ledgerReadError = null;
       return state.ledger;
     }
     try {
       state.ledger = loadProjectLedger(storage, projectId);
+      state.ledgerReadError = null;
       harvestOrphanPointsFromLedger();
     } catch (error) {
+      // Never leave another project's rows/controls visible after a failed read.
+      // Keep the broken bytes in storage so explicit repair can recover the ledger.
+      state.ledger = { project_id: projectId, after_seq: 0, events: [], takes: [], validCounts: new Map() };
+      state.ledgerReadError = {
+        project_id: projectId, code: error?.code || error?.name || 'ledger_read_failed',
+        message: error?.message || '',
+      };
+      state.lastBackupPayload = null;
+      state.editingReassignTakeId = null;
+      state.reassignDrafts.clear();
+      takeItemCache.clear();
       handleError('读取拍摄记录', error);
     }
     return state.ledger;
   }
 
+  function localLedgerIncomplete() {
+    return Boolean(state.ledgerSyncError || state.syncingLog ||
+      state.status.event_seq > state.ledger.after_seq);
+  }
+
+  function renderLedgerStorageNotice() {
+    const failure = currentLedgerFailure();
+    const notice = el('ledger-storage-notice');
+    const row = el('ledger-storage-details');
+    if (row) row.hidden = !failure;
+    if (notice) {
+      notice.hidden = !failure;
+      setTextIfChanged(notice, state.ledgerReadError ? '手机记录读取失败' : failure ? '手机记录未同步' : '');
+    }
+    const syncState = state.ledgerReadError ? 'unreadable' : failure ? 'failed' : localLedgerIncomplete() ? 'pending' : 'clean';
+    el('nav-btn-records').dataset.syncState = syncState;
+    const hint = state.syncingLog ? '更新中' : syncState === 'pending' ? '待更新' : '';
+    setTextIfChanged(el('records-sync-hint'), hint);
+    setTextIfChanged(el('records-sync-status'), hint);
+    renderFeedbackVisibility();
+  }
+
   function applyStatusSnapshot(snapshot) {
-    if (!snapshot || typeof snapshot !== 'object') return;
+    if (destroyed || !snapshot || typeof snapshot !== 'object') return;
     statusVersion += 1;
     state.lastStatusReceivedAt = now();
     const prevPhase = state.status.phase;
     const prevProjectId = state.status.project_id;
+    const prevBootId = state.status.boot_id;
     if (typeof snapshot.project_id === 'string') state.status.project_id = snapshot.project_id;
-    if (typeof snapshot.template_id === 'string' && snapshot.template_id) state.status.template_id = snapshot.template_id;
+    if (typeof snapshot.template_id === 'string') state.status.template_id = snapshot.template_id;
+    else if (prevProjectId !== state.status.project_id) state.status.template_id = '';
     const hasValidTarget = isValidTargetCameras(snapshot.target_cameras);
     const hasValidActive = isValidActiveParticipants(snapshot.active_participants);
     state.status.selectionSupported = Boolean(hasValidTarget && hasValidActive);
@@ -1742,15 +2098,25 @@ export function createApp({
         { ...state.status.cameras[1], ...snapshot.cameras[1] },
       ];
     }
+    if (prevProjectId !== state.status.project_id || prevBootId !== state.status.boot_id) {
+      projectVersion += 1;
+      hardwareClockAnchor = null;
+    }
+    if (state.status.boot_id && Number.isFinite(snapshot.mono_ms)) {
+      hardwareClockAnchor = { bootId: state.status.boot_id, monoMs: snapshot.mono_ms, receivedAt: monotonicNow() };
+    }
     if (state.status.phase === 'idle' && !pendingStart) {
       state.pendingStartCommandId = null;
     }
-    if (state.status.phase === 'recording') {
+    if (state.status.phase === 'recording' && !pendingStop && !pendingStart?.cancelRequested) {
       void acquireWakeLock();
     } else if (state.status.phase === 'idle') {
       void releaseWakeLock();
     }
-    if ((prevPhase === 'recording' || prevPhase === 'stopping') && state.status.phase === 'idle' && state.status.project_id) {
+    if (prevPhase !== 'recording' && state.status.phase === 'recording' && state.status.project_id) {
+      void syncCurrentProject(state.status.project_id, { silent: true });
+    }
+    if ((prevPhase === 'recording' || prevPhase === 'stopping' || prevPhase === 'closing') && state.status.phase === 'idle' && state.status.project_id) {
       void syncCurrentProject(state.status.project_id, { silent: true });
     }
     if (prevProjectId !== state.status.project_id) {
@@ -1766,7 +2132,10 @@ export function createApp({
   // Attach callbacks to client while preserving any existing handlers
   const prevOnStatus = client.onStatus;
   client.onStatus = async status => {
+    const connection = connectionVersion;
+    const project = projectVersion;
     if (typeof prevOnStatus === 'function') await prevOnStatus(status);
+    if (destroyed || !state.connected || connection !== connectionVersion || project !== projectVersion) return;
     applyStatusSnapshot(status);
   };
 
@@ -1778,6 +2147,7 @@ export function createApp({
     state.connecting = false;
     if (!info?.connected) {
       void releaseWakeLock();
+      hardwareClockAnchor = null;
       state.syncingLog = false;
       state.pendingSelect = null;
       if (info?.error && info.error.code && info.error.code !== 'disconnected') {
@@ -1836,8 +2206,8 @@ export function createApp({
       cardEl.classList.toggle('is-unselected', Boolean(state.connected && !isSelectedForTake && !recording && !cachedRecording));
       cardEl.dataset.selected = isSelectedForTake ? 'true' : 'false';
     }
-    if (titleWrapEl) titleWrapEl.hidden = !showConnectedDetails;
-    if (metricsEl) metricsEl.hidden = !showConnectedDetails;
+    if (titleWrapEl) titleWrapEl.hidden = false;
+    if (metricsEl) metricsEl.hidden = false;
     if (detailsEl) {
       detailsEl.hidden = !showConnectedDetails;
       if (!showConnectedDetails) detailsEl.open = false;
@@ -1884,7 +2254,7 @@ export function createApp({
     setTextIfChanged(
       batEl,
       !showConnectedDetails
-        ? ''
+        ? '电量未知'
         : (connected && Number.isFinite(cam?.battery) ? `${cam.battery}%` : '暂时无法确认')
     );
 
@@ -1929,6 +2299,15 @@ export function createApp({
       : effectiveTarget;
     const anySelectedStale = !hasFreshStatus || admission.selectedStale;
     const selectedReady = hasFreshStatus && selectionSupported && isValidTargetCameras(targetCameras) && admission.targetReady;
+    const desiredMode = (phase === 'idle' && !pendingStart && !(state.status.active_take_id > 0) && !anyConnectedRecording)
+      ? 'start'
+      : 'stop';
+
+    const targetTrack = el('target-camera-strip');
+    const confirmedTarget = selectionSupported && isValidTargetCameras(targetCameras);
+    targetTrack?.classList.toggle('has-confirmed-target', confirmedTarget);
+    if (confirmedTarget) targetTrack?.style.setProperty('--target-index', String({ 3: 0, 1: 1, 2: 2 }[targetCameras]));
+    else targetTrack?.style.removeProperty('--target-index');
 
     // 3-way target camera buttons
     const targetBtns = [
@@ -1944,7 +2323,7 @@ export function createApp({
       btn.classList.toggle('is-active', isConfirmed);
       btn.classList.toggle('is-pending', isPending);
       btn.setAttribute('aria-pressed', isConfirmed ? 'true' : 'false');
-      btn.disabled = !state.connected || !selectionSupported || Boolean(state.pendingSelect || pendingStart || phase !== 'idle');
+      btn.disabled = !state.connected || !selectionSupported || !templateMatchesDevice() || Boolean(state.pendingSelect || pendingStart || phase !== 'idle');
     }
 
     if (phaseBadge) {
@@ -1985,13 +2364,11 @@ export function createApp({
     }
 
     if (btnRecordMain) {
-      const desiredMode = (phase === 'idle' && !pendingStart && !(state.status.active_take_id > 0) && !anyConnectedRecording)
-        ? 'start'
-        : 'stop';
       btnRecordMain.disabled = !state.connected ||
         Boolean(pendingStop || pendingStart?.cancelRequested) ||
         (desiredMode === 'start' && (
           !selectionSupported ||
+          !templateMatchesDevice() ||
           !state.status.project_id ||
           !state.status.action_id ||
           Boolean(state.pendingSelect) ||
@@ -2057,57 +2434,74 @@ export function createApp({
         } else {
           setTextIfChanged(obsTextEl, '请检查相机');
         }
+      } else if (!templateMatchesDevice()) {
+        setTextIfChanged(obsTextEl, `相机已就绪（${describeTargetCameras(effectiveTarget)}），暂不能开始录像`);
       } else {
         setTextIfChanged(obsTextEl, `已就绪（${describeTargetCameras(effectiveTarget)}），可以开始录像`);
       }
     }
 
-    const targetAlertBar = el('target-alert-bar');
-    if (targetAlertBar) {
-      let alertMsg = '';
-      const targetCams = state.status.target_cameras;
-      const camA = state.status.cameras?.[0];
-      const camB = state.status.cameras?.[1];
-      const isRecording = state.status.phase === 'recording';
+    if (obsTextEl && !templateMatchesDevice()) {
+      setTextIfChanged(obsTextEl, `${obsTextEl.textContent} · ${templateMismatchMessage()}`);
+    }
 
-      if (state.connected) {
-        if (targetCams === 1) {
-          if (camA && !camA.connected) {
-            alertMsg = isRecording ? '只拍 A 机模式下 A 机已断开！' : '只拍 A 机模式下 A 机未连接，无法开始拍摄';
-          } else if (camA && !camA.ready && !isRecording) {
-            alertMsg = '只拍 A 机模式下 A 机未就绪，请检查 A 机状态';
-          } else {
-            alertMsg = '注意：当前为只拍 A 机模式，B 机不参与本段录像';
-          }
-        } else if (targetCams === 2) {
-          if (camB && !camB.connected) {
-            alertMsg = isRecording ? '只拍 B 机模式下 B 机已断开！' : '只拍 B 机模式下 B 机未连接，无法开始拍摄';
-          } else if (camB && !camB.ready && !isRecording) {
-            alertMsg = '只拍 B 机模式下 B 机未就绪，请检查 B 机状态';
-          } else {
-            alertMsg = '注意：当前为只拍 B 机模式，A 机不参与本段录像';
-          }
-        } else if (targetCams === 3) {
-          if (camA && camB) {
-            if (!camA.connected || !camB.connected) {
-              const missing = !camA.connected && !camB.connected ? 'A/B 双机' : (!camA.connected ? 'A 机' : 'B 机');
-              alertMsg = isRecording ? `录像中：${missing}断开连接！` : `双机模式下 ${missing} 未连接，无法开始同拍`;
-            } else if (!camA.ready || !camB.ready) {
-              const unready = !camA.ready && !camB.ready ? 'A/B 双机' : (!camA.ready ? 'A 机' : 'B 机');
-              alertMsg = isRecording ? `录像中：${unready}状态异常` : `双机模式下 ${unready} 未就绪，无法开始同拍`;
-            }
-          }
+    const globalStrip = el('global-record-strip');
+    const globalRecordText = el('global-record-text');
+    const btnGlobalStop = el('btn-global-stop');
+    if (globalStrip) {
+      const isStripVisible = (state.activeView === 'list' || state.activeView === 'records') && desiredMode === 'stop';
+      globalStrip.hidden = !isStripVisible;
+      if (isStripVisible) {
+        if (globalRecordText && obsTextEl) {
+          setTextIfChanged(globalRecordText, obsTextEl.textContent);
+        }
+        if (btnGlobalStop) {
+          btnGlobalStop.disabled = !state.connected || Boolean(pendingStop || pendingStart?.cancelRequested);
         }
       }
-
-      if (alertMsg) {
-        targetAlertBar.hidden = false;
-        setTextIfChanged(targetAlertBar, alertMsg);
-      } else {
-        targetAlertBar.hidden = true;
-        setTextIfChanged(targetAlertBar, '');
-      }
     }
+
+    const targetAlertBar = el('target-alert-bar');
+    if (targetAlertBar) {
+      const alerts = [];
+      if (state.connected && isValidTargetCameras(targetCameras)) {
+        const mask = isTakeActive ? activeMask : targetCameras;
+        const mode = mask === 3 ? '双机模式下 ' : mask === 1 ? '只拍 A 机模式下 ' : '只拍 B 机模式下 ';
+        for (let i = 0; i < 2; i++) {
+          if (!(mask & (1 << i))) continue;
+          const cam = cams[i];
+          const name = i === 0 ? 'A 机' : 'B 机';
+          if (!cam?.connected) alerts.push(`${mode}${name} 未连接`);
+          else if (!hasFreshStatus || cam.fresh === false) alerts.push(`${name}状态待确认，请等待更新`);
+          else if (cam.sleeping || cam.video === false) alerts.push(`${name}未处于可录像模式`);
+          else if (cam.recording === true) { /* ready includes !recording in firmware. */ }
+          else if (isTakeActive) {
+            if (phase === 'recording') alerts.push(`${name}尚未观察到录像`);
+          } else if (!cam.ready) alerts.push(`${mode}${name} 未就绪`);
+        }
+      }
+      targetAlertBar.hidden = alerts.length === 0;
+      setTextIfChanged(targetAlertBar, alerts.join('；'));
+    }
+    renderRecordElapsed(receiptStale);
+  }
+
+  function renderRecordElapsed(receiptStale) {
+    const take = state.ledger.project_id === state.status.project_id
+      ? state.ledger.takes.find(t => t.take_id === state.status.active_take_id) : null;
+    const mask = state.status.active_participants;
+    const observedRecording = isValidTargetCameras(mask) && state.status.cameras.some((cam, i) =>
+      (mask & (1 << i)) && cam?.connected && cam?.fresh !== false && cam?.recording === true);
+    let text = '本段计时：待确认';
+    const anchor = hardwareClockAnchor;
+    if (state.connected && !receiptStale && observedRecording && state.status.phase === 'recording' &&
+        take && !take.ended && take.boot_id && take.boot_id === state.status.boot_id &&
+        anchor?.bootId === take.boot_id && Number.isFinite(take.begin_mono_ms) &&
+        anchor.monoMs >= take.begin_mono_ms) {
+      text = `本段计时：${formatElapsedMs(anchor.monoMs - take.begin_mono_ms +
+        Math.max(0, monotonicNow() - anchor.receivedAt))}`;
+    }
+    setTextIfChanged(el('record-elapsed'), text);
   }
 
   // Targeted tick update for staleness timer — never touches action/filter/take interactive lists
@@ -2122,6 +2516,7 @@ export function createApp({
     return filterActions(state.template.actions, {
       query: state.searchQuery,
       group: state.groupFilter,
+      typeFilter: state.typeFilter,
       statusFilter: state.statusFilter,
       validCounts: state.ledger.validCounts,
     });
@@ -2187,6 +2582,10 @@ export function createApp({
   }
 
   function syncReassignSelectOptions(entry, take) {
+    entry.actionSelect.disabled = !templateMatchesDevice();
+    entry.pointSelect.disabled = !templateMatchesDevice();
+    entry.confirmBtn.disabled = !templateMatchesDevice();
+    if (!templateMatchesDevice()) return;
     const takeId = take.take_id;
     let draft = state.reassignDrafts.get(takeId);
     if (!draft) {
@@ -2258,6 +2657,7 @@ export function createApp({
 
   function getOrCreateTakeItem(take) {
     const takeId = take.take_id;
+    const takeProjectId = state.ledger.project_id;
     let entry = takeItemCache.get(takeId);
     if (!entry) {
       const itemEl = doc.createElement('div');
@@ -2286,9 +2686,12 @@ export function createApp({
       discardBadge.className = 'badge';
       const endBadge = doc.createElement('span');
       endBadge.className = 'badge';
+      const durationSpan = doc.createElement('span');
+      durationSpan.className = 'take-duration';
       headerRight.appendChild(participantsBadge);
       headerRight.appendChild(discardBadge);
       headerRight.appendChild(endBadge);
+      headerRight.appendChild(durationSpan);
 
       headerDiv.appendChild(headerLeft);
       headerDiv.appendChild(headerRight);
@@ -2317,7 +2720,7 @@ export function createApp({
       btnReassign.dataset.action = 'open-reassign';
       btnReassign.dataset.takeId = String(takeId);
       const btnReassignLabel = doc.createElement('span');
-      btnReassignLabel.textContent = '修改拍摄内容';
+      btnReassignLabel.textContent = '改归属';
       btnReassign.appendChild(btnReassignLabel);
 
       btnRow.appendChild(btnDiscard);
@@ -2371,11 +2774,13 @@ export function createApp({
         participantsBadge,
         discardBadge,
         endBadge,
+        durationSpan,
         camASpan,
         camBSpan,
         btnDiscard,
         btnDiscardLabel,
         btnReassign,
+        btnReassignLabel,
         panel,
         actionSelect,
         pointSelect,
@@ -2386,28 +2791,27 @@ export function createApp({
       };
 
       btnDiscard.addEventListener('click', () => {
+        if (!state.connected || state.ledgerReadError || takeProjectId !== state.status.project_id) return;
         const currentTake = state.ledger.takes.find(t => t.take_id === takeId);
         const currentDiscarded = Boolean(currentTake?.discarded);
-        void markDiscard(takeId, !currentDiscarded);
+        void markDiscard(takeId, !currentDiscarded, takeProjectId);
       });
 
       btnReassign.addEventListener('click', () => {
-        const currentTake = state.ledger.takes.find(t => t.take_id === takeId) || take;
+        const currentTake = state.ledger.takes.find(t => t.take_id === takeId);
+        if (!state.connected || !currentTake?.ended || takeProjectId !== state.status.project_id || state.ledgerReadError) return;
         if (state.editingReassignTakeId === takeId) {
           state.editingReassignTakeId = null;
           state.reassignDrafts.delete(takeId);
         } else {
-          state.editingReassignTakeId = takeId;
-          state.reassignDrafts.set(takeId, {
-            action_id: currentTake.action_id || state.template.actions[0]?.action_id || '',
-            point_id: currentTake.point_id ?? '',
-          });
-          syncReassignSelectOptions(entry, currentTake);
+          openTakeReassign(takeId, takeProjectId);
+          return;
         }
         render();
       });
 
       actionSelect.addEventListener('change', () => {
+        if (!templateMatchesDevice() || takeProjectId !== state.status.project_id || state.ledgerReadError) return;
         const currentTake = state.ledger.takes.find(t => t.take_id === takeId) || take;
         const nextActionId = actionSelect.value;
         state.reassignDrafts.set(takeId, {
@@ -2418,6 +2822,7 @@ export function createApp({
       });
 
       pointSelect.addEventListener('change', () => {
+        if (!templateMatchesDevice() || takeProjectId !== state.status.project_id || state.ledgerReadError) return;
         const draft = state.reassignDrafts.get(takeId) || {
           action_id: actionSelect.value,
           point_id: '',
@@ -2430,10 +2835,11 @@ export function createApp({
         const draft = state.reassignDrafts.get(takeId);
         const targetAction = actionSelect.value || draft?.action_id || '';
         const targetPoint = pointSelect.value ?? draft?.point_id ?? '';
-        void reassignTake(takeId, targetAction, targetPoint);
+        void reassignTake(takeId, targetAction, targetPoint, takeProjectId);
       });
 
       cancelBtn.addEventListener('click', () => {
+        if (takeProjectId !== state.status.project_id) return;
         state.editingReassignTakeId = null;
         state.reassignDrafts.delete(takeId);
         render();
@@ -2445,6 +2851,11 @@ export function createApp({
   }
 
   function render() {
+    renderLedgerStorageNotice();
+    closeStaleShootDetails();
+    if (!templateMatchesDevice()) state.editingReassignTakeId = null;
+    el('btn-trigger-add-point').disabled = !state.connected || !templateMatchesDevice();
+    el('btn-rename-point').disabled = !state.connected || !templateMatchesDevice();
     const receiptStale = isReceiptStale();
     const desktopMode = isDesktopLayout();
     state.desktopMode = desktopMode;
@@ -2467,15 +2878,14 @@ export function createApp({
       bottomNavEl.hidden = desktopMode;
     }
 
+    updateShootOverflowMode();
+
     // Card 1: Connection & Project / Template
     const connBadge = el('conn-badge');
     const connBadgeText = el('conn-badge-text');
     if (connBadge && connBadgeText) {
-      if (state.syncingLog) {
-        connBadge.dataset.state = 'syncing';
-        setTextIfChanged(connBadgeText, '正在更新记录');
-      } else if (state.connecting) {
-        connBadge.dataset.state = 'syncing';
+      if (state.connecting) {
+        connBadge.dataset.state = 'connecting';
         setTextIfChanged(connBadgeText, '连接中');
       } else if (state.connected) {
         connBadge.dataset.state = 'connected';
@@ -2493,11 +2903,16 @@ export function createApp({
       } else if (!state.status.project_id) {
         setTextIfChanged(topbarProjSummary, '尚未新建拍摄项目');
       } else {
-        setTextIfChanged(topbarProjSummary, `项目 ${state.status.project_id} · 已拍 ${state.status.take_id ?? 0} 段`);
+        setTextIfChanged(topbarProjSummary, `项目 ${state.status.project_id}`);
       }
     }
 
-    setTextIfChanged(el('template-subtitle'), `拍摄清单：${state.template.template_name}`);
+    const templateSummary = templateMatchesDevice()
+      ? `拍摄清单：${state.template.template_name} · ${state.template.template_id}`
+      : templateMismatchMessage();
+    setTextIfChanged(el('template-subtitle'), state.templateLoadError
+      ? `${templateSummary} · 手机清单缓存不可用（${state.templateLoadError.code}：${state.templateLoadError.message}）`
+      : templateSummary);
     setTextIfChanged(el('meta-project-id'), state.status.project_id || '尚未创建');
     setTextIfChanged(el('meta-template-id'), state.status.template_id || state.template.template_id);
     setTextIfChanged(el('meta-event-seq'), `${state.status.event_seq ?? 0} / ${state.ledger.after_seq ?? 0}`);
@@ -2544,16 +2959,13 @@ export function createApp({
     if (initBox) initBox.hidden = !state.connected || !isProjectEmpty;
     if (usbNotice) usbNotice.hidden = isProjectEmpty;
 
-    const mustShowSetupCard = !state.connected || state.connecting || isProjectEmpty;
-    const cardConnEl = el('card-connection');
-    if (cardConnEl) {
-      cardConnEl.hidden = !mustShowSetupCard && !state.settingsExpanded;
-    }
+    const modalSettings = el('modal-settings');
     const btnToggleSettings = el('btn-toggle-settings');
     if (btnToggleSettings) {
-      const isExpanded = mustShowSetupCard || state.settingsExpanded;
+      const isExpanded = Boolean(modalSettings?.open);
       btnToggleSettings.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
       btnToggleSettings.classList.toggle('is-active', isExpanded);
+      setTextIfChanged(el('btn-toggle-settings-label'), state.connected ? '设置' : '连接与设置');
     }
 
     // Card 2 & Card 3: Camera A & Camera B
@@ -2561,7 +2973,7 @@ export function createApp({
     renderCameraCard('cam-b', state.status.cameras?.[1], receiptStale);
 
     // Card 4: Current Confirmed Action & Stepper
-    const confirmedAction = state.template.actions.find(a => a.action_id === state.status.action_id) || null;
+    const confirmedAction = currentTemplateAction();
     setTextIfChanged(el('confirmed-action-id'), state.status.action_id || '未选择');
 
     const confirmedPointIdEl = el('confirmed-point-id');
@@ -2571,39 +2983,46 @@ export function createApp({
       setTextIfChanged(
         confirmedPointIdEl,
         state.status.point_id
-          ? `位置：${ptObj?.name || state.status.point_id}`
-          : '不指定拍摄位置'
+          ? `${state.status.point_id} · ${ptObj && !ptObj.orphan ? ptObj.name : '未收录名称'}`
+          : '未指定点位'
       );
     }
 
-    const confirmedTypeEl = el('confirmed-action-type');
-    if (confirmedTypeEl) {
-      confirmedTypeEl.hidden = !confirmedAction;
-      setTextIfChanged(
-        confirmedTypeEl,
-        confirmedAction ? (confirmedAction.type === 'static' ? '静态' : '动态') : ''
-      );
-    }
-    const confirmedGroupEl = el('confirmed-action-group');
-    if (confirmedGroupEl) {
-      confirmedGroupEl.hidden = !confirmedAction;
-      setTextIfChanged(confirmedGroupEl, confirmedAction?.group || '');
-    }
+    if (confirmedPointIdEl) confirmedPointIdEl.setAttribute('aria-label', confirmedPointIdEl.textContent);
+    el('btn-current-details').disabled = !state.status.action_id;
     setTextIfChanged(
       el('confirmed-action-name'),
       confirmedAction
         ? confirmedAction.name
-        : (state.status.action_id ? `清单中没有 ${state.status.action_id}，请检查所选清单` : '请从拍摄清单中选择一项')
+        : (state.status.action_id ? '未收录名称' : '请从拍摄清单中选择一项')
     );
 
     const listSelectedSummary = el('list-selected-summary');
     if (listSelectedSummary) {
-      setTextIfChanged(
-        listSelectedSummary,
-        confirmedAction
-          ? `当前动作：${confirmedAction.action_id} ${confirmedAction.name}`
-          : (state.status.action_id ? `当前动作：${state.status.action_id}` : '当前动作：未选择')
-      );
+      if (!state.connected) {
+        setTextIfChanged(listSelectedSummary, '未连接遥控器');
+      } else if (state.status.phase === 'stopping' || state.status.phase === 'closing' || pendingStart?.cancelRequested) {
+        setTextIfChanged(listSelectedSummary, '正在停止录像，暂时无法切换动作');
+      } else if (state.status.phase !== 'idle' || state.pendingStartCommandId || (state.status.active_take_id > 0)) {
+        setTextIfChanged(listSelectedSummary, '正在录像中，请先停止录像再切换动作');
+      } else if (state.pendingSelect) {
+        setTextIfChanged(listSelectedSummary, '正在保存动作设置，请稍候…');
+      } else {
+        setTextIfChanged(
+          listSelectedSummary,
+          confirmedAction
+            ? `当前动作：${confirmedAction.action_id} ${confirmedAction.name}`
+            : (state.status.action_id ? `当前动作：${state.status.action_id}` : '当前动作：未选择')
+        );
+      }
+    }
+
+    const renamePointButton = el('btn-rename-point');
+    if (renamePointButton) {
+      const point = confirmedAction?.points?.find(p => p.point_id === state.status.point_id);
+      const orphanCount = confirmedAction?.points.filter(p => p.orphan).length || 0;
+      renamePointButton.hidden = orphanCount === 0;
+      setTextIfChanged(renamePointButton, point?.orphan ? `给 ${point.point_id} 补中文名` : `补名 ${orphanCount}`);
     }
 
     const pendingBadgeEl = el('action-pending-badge');
@@ -2641,6 +3060,12 @@ export function createApp({
             btn.type = 'button';
             btn.className = 'point-pill';
             btn.dataset.pointId = pt.point_id;
+            const label = doc.createElement('span');
+            label.className = 'point-pill-label';
+            const mark = doc.createElement('span');
+            mark.className = 'point-orphan-mark';
+            mark.textContent = '补名';
+            btn.append(label, mark);
             btn.addEventListener('click', () => {
               const targetActionId = state.status.action_id;
               if (targetActionId) {
@@ -2651,6 +3076,7 @@ export function createApp({
             pointPillsEl.appendChild(btn);
           }
           pointPillCache.signature = sig;
+          schedulePointReveal();
         }
         for (const pt of allPoints) {
           const btn = pointPillCache.nodesByPointId.get(pt.point_id);
@@ -2662,8 +3088,13 @@ export function createApp({
             (state.pendingSelect.point_id || '') === pt.point_id
           );
           btn.classList.toggle('is-active', isCurrent);
+          btn.classList.toggle('is-orphan', Boolean(pt.orphan));
+          btn.querySelector('.point-orphan-mark').hidden = !pt.orphan;
+          btn.setAttribute('aria-label', `${pt.point_id ? `${pt.point_id} · ${pt.orphan ? '未收录名称' : pt.name || '未收录名称'}` : '未指定点位'}${pt.orphan ? ' · 待补中文名' : ''}`);
           btn.setAttribute('aria-pressed', isCurrent ? 'true' : 'false');
           btn.disabled = Boolean(
+            !state.connected ||
+            !templateMatchesDevice() ||
             !state.status.selectionSupported ||
             state.pendingSelect ||
             pendingStart ||
@@ -2671,7 +3102,7 @@ export function createApp({
           );
           let displayLabel = '不指定位置';
           if (pt.point_id) {
-            if (!pt.name || pt.name === pt.point_id) {
+            if (pt.orphan || !pt.name || pt.name === pt.point_id) {
               displayLabel = pt.point_id;
             } else if (pt.name.startsWith(pt.point_id)) {
               displayLabel = pt.name;
@@ -2680,23 +3111,40 @@ export function createApp({
             }
           }
           setTextIfChanged(
-            btn,
+            btn.querySelector('.point-pill-label'),
             isPendingThis ? '正在切换…' : displayLabel
           );
         }
       }
     }
 
+    const revealIdentity = `${state.status.project_id}/${state.status.action_id}/${state.status.point_id || ''}`;
+    if (pointRevealIdentity !== revealIdentity) {
+      pointRevealIdentity = revealIdentity;
+      schedulePointReveal();
+    } else if (pointRevealPending && !el('view-shoot').hidden) schedulePointReveal();
+    updatePointOverflowMarkers();
+
     const btnPrev = el('btn-prev-action');
     const btnNext = el('btn-next-action');
     const actionSwitchBlocked = Boolean(
+      !state.connected ||
+      !templateMatchesDevice() ||
       !state.status.selectionSupported ||
       state.pendingSelect ||
       pendingStart ||
       state.status.phase !== 'idle'
     );
-    if (btnPrev) btnPrev.disabled = actionSwitchBlocked || state.template.actions.length === 0;
-    if (btnNext) btnNext.disabled = actionSwitchBlocked || state.template.actions.length === 0;
+    const stepperActions = [...state.template.actions].sort(
+      (a, b) => (a.order ?? 0) - (b.order ?? 0) || a.action_id.localeCompare(b.action_id)
+    );
+    const stepperCurrentIdx = stepperActions.findIndex(a => a.action_id === state.status.action_id);
+    const isFirstAction = stepperCurrentIdx === 0;
+    const isLastAction = stepperCurrentIdx !== -1 && stepperCurrentIdx === stepperActions.length - 1;
+    const btnOpenActionList = el('btn-open-action-list');
+    if (btnPrev) btnPrev.disabled = actionSwitchBlocked || stepperActions.length === 0 || isFirstAction;
+    if (btnNext) btnNext.disabled = actionSwitchBlocked || stepperActions.length === 0 || isLastAction;
+    if (btnOpenActionList) btnOpenActionList.disabled = actionSwitchBlocked;
     setTextIfChanged(el('btn-prev-label'), state.pendingSelect ? '正在切换…' : '上一项');
     setTextIfChanged(el('btn-next-label'), state.pendingSelect ? '正在切换…' : '下一项');
 
@@ -2732,12 +3180,42 @@ export function createApp({
       }
     }
 
-    const statusFilters = [
+    const typeFilters = [
       { key: 'all', label: '全部' },
       { key: 'static', label: '静态' },
       { key: 'dynamic', label: '动态' },
-      { key: 'unshot', label: '未拍' },
-      { key: 'shot', label: '已拍' },
+    ];
+    const typePillsEl = el('filter-type-pills');
+    if (typePillsEl) {
+      if (typePillNodes.size === 0) {
+        typePillsEl.replaceChildren();
+        for (const tf of typeFilters) {
+          const btn = doc.createElement('button');
+          btn.type = 'button';
+          btn.className = 'pill-btn';
+          btn.dataset.typeFilter = tf.key;
+          btn.textContent = tf.label;
+          btn.addEventListener('click', () => {
+            state.typeFilter = tf.key;
+            render();
+          });
+          typePillNodes.set(tf.key, btn);
+          typePillsEl.appendChild(btn);
+        }
+      }
+      for (const tf of typeFilters) {
+        const btn = typePillNodes.get(tf.key);
+        if (!btn) continue;
+        const active = state.typeFilter === tf.key;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      }
+    }
+
+    const statusFilters = [
+      { key: 'all', label: '全部' },
+      { key: 'shot', label: '有记录' },
+      { key: 'unshot', label: '无记录' },
     ];
     const statusPillsEl = el('filter-status-pills');
     if (statusPillsEl) {
@@ -2783,7 +3261,7 @@ export function createApp({
         for (const item of filteredActions) {
           const entry = getOrCreateActionRow(item);
           const count = state.ledger.validCounts.get(item.action_id) || 0;
-          const isConfirmed = state.status.action_id === item.action_id;
+          const isConfirmed = templateMatchesDevice() && state.status.action_id === item.action_id;
           const isPending = state.pendingSelect?.action_id === item.action_id;
           const typeLabel = item.type === 'static' ? '静态' : '动态';
           const pointsHint = item.points?.length
@@ -2791,6 +3269,7 @@ export function createApp({
             : '';
 
           entry.rowBtn.classList.toggle('is-confirmed', isConfirmed);
+          entry.rowBtn.setAttribute('aria-pressed', isConfirmed ? 'true' : 'false');
           entry.rowBtn.classList.toggle('is-pending', isPending);
           entry.rowBtn.dataset.actionId = item.action_id;
           entry.rowBtn.disabled = actionSwitchBlocked;
@@ -2802,7 +3281,7 @@ export function createApp({
           entry.pendingBadge.hidden = !isPending;
           entry.countBadge.dataset.state = count > 0 ? 'ready' : 'disconnected';
           entry.countBadge.dataset.takeCount = String(count);
-          setTextIfChanged(entry.countBadge, `已拍 ${count} 段`);
+          setTextIfChanged(entry.countBadge, `记录 ${count} 段`);
 
           desiredActionNodes.push(entry.rowBtn);
         }
@@ -2817,23 +3296,22 @@ export function createApp({
     const validTotal = state.ledger.takes.filter(t => !t.discarded).length;
     setTextIfChanged(el('takes-count-badge'), `保留 ${validTotal} / 共 ${state.ledger.takes.length} 段`);
 
-    const recentTakeSummaryEl = el('recent-take-summary');
-    if (recentTakeSummaryEl) {
-      if (takesDesc.length === 0) {
-        setTextIfChanged(recentTakeSummaryEl, '最近一段：还没有拍摄记录');
-      } else {
-        const latest = takesDesc[0];
-        const latestTargetLabel = isValidTargetCameras(latest.participants)
-          ? describeTargetCameras(latest.participants)
-          : '未记录相机';
-        const latestStateLabel = latest.discarded
-          ? '不使用'
-          : (latest.ended ? (latest.complete ? '已拍完' : '有异常') : '尚未结束');
-        setTextIfChanged(
-          recentTakeSummaryEl,
-          `最近：第 ${latest.take_id} 段 · ${latest.action_id || '未指定'} · ${latestTargetLabel} · ${latestStateLabel}`
-        );
-      }
+    const latest = takesDesc[0];
+    const recentButton = el('btn-open-records');
+    recentButton.dataset.projectId = state.ledger.project_id || '';
+    recentButton.dataset.takeId = latest ? String(latest.take_id) : '';
+    recentButton.disabled = !templateMatchesDevice() || !latest?.ended || !state.connected || Boolean(state.ledgerReadError) ||
+      state.ledger.project_id !== state.status.project_id;
+    if (!latest) {
+      setTextIfChanged(el('recent-take-identity'), state.ledgerReadError ? '手机拍摄记录读取失败' : '最近：还没有拍摄记录');
+      setTextIfChanged(el('recent-take-result'), '');
+    } else {
+      const duration = latest.ended ? getTakeDurationMs(latest) : null;
+      const elapsed = latest.ended ? ` · ${duration !== null ? formatElapsedMs(duration) : '计时待确认'}` : '';
+      setTextIfChanged(el('recent-take-identity'), `最近：第${latest.take_id}段 · ${latest.action_id || '未指定'}${latest.point_id ? '/' + latest.point_id : ''}${elapsed}`);
+      const cameras = isValidTargetCameras(latest.participants) ? describeTargetCameras(latest.participants) : '未记录相机';
+      const result = latest.discarded ? '不使用' : latest.ended ? latest.complete ? '已拍完' : '有异常' : '尚未结束';
+      setTextIfChanged(el('recent-take-result'), `${cameras} · ${result}`);
     }
 
     const takesListEl = el('recent-takes-list');
@@ -2844,15 +3322,31 @@ export function createApp({
           emptyTakesHintEl.className = 'empty-hint';
           emptyTakesHintEl.textContent = '还没有拍摄记录。拍完后点击“更新拍摄记录”查看。';
         }
+        setTextIfChanged(emptyTakesHintEl, state.ledgerReadError ? '手机记录读取失败，已暂停显示片段；请保留缓存并修复后更新记录。' : '还没有拍摄记录。拍完后点击“更新拍摄记录”查看。');
         reconcileChildOrder(takesListEl, [emptyTakesHintEl]);
       } else {
         const desiredTakeNodes = [];
         for (const take of takesDesc) {
           const entry = getOrCreateTakeItem(take);
+          const reassignDisabled = Boolean(
+            !templateMatchesDevice() ||
+            !take.ended ||
+            !state.connected ||
+            Boolean(state.ledgerReadError) ||
+            state.ledger.project_id !== state.status.project_id
+          );
+          entry.btnReassign.disabled = reassignDisabled;
+          entry.btnReassign.title = !take.ended ? '结束后可改归属' : '改归属';
+          setTextIfChanged(entry.btnReassignLabel, !take.ended ? '结束后可改归属' : '改归属');
+          entry.actionSelect.disabled = reassignDisabled;
+          entry.pointSelect.disabled = reassignDisabled;
+          entry.confirmBtn.disabled = reassignDisabled;
+
+          entry.btnDiscard.disabled = !state.connected || Boolean(state.ledgerReadError);
           entry.itemEl.classList.toggle('is-discarded', Boolean(take.discarded));
           entry.itemEl.dataset.participants = String(take.participants || 0);
 
-          const tplAction = state.template.actions.find(a => a.action_id === take.action_id);
+          const tplAction = findTemplateAction(state.template, take.template_id, take.action_id);
           const actionLabel = tplAction ? `${take.action_id} ${tplAction.name}` : (take.action_id || '尚未选择拍摄内容');
           const pointLabel = take.point_id ? ` · 点位 ${take.point_id}` : '';
           const reassignHint = take.reassigned && take.initial_action_id !== take.action_id
@@ -2884,7 +3378,11 @@ export function createApp({
 
           setTextIfChanged(entry.camASpan, camASummary);
           setTextIfChanged(entry.camBSpan, camBSummary);
-          setTextIfChanged(entry.btnDiscardLabel, take.discarded ? '保留这段' : '不用这段');
+          setTextIfChanged(entry.btnDiscardLabel, take.discarded ? '保留这段' : '标记不用');
+
+          const duration = take.ended ? getTakeDurationMs(take) : null;
+          const durationText = take.ended ? (duration !== null ? formatElapsedMs(duration) : '计时待确认') : '';
+          setTextIfChanged(entry.durationSpan, durationText);
 
           const isEditingThis = state.editingReassignTakeId === take.take_id;
           entry.panel.hidden = !isEditingThis;
@@ -2897,71 +3395,97 @@ export function createApp({
         reconcileChildOrder(takesListEl, desiredTakeNodes);
       }
     }
+    updateShootOverflowMode();
   }
 
   // === Core Operations & BLE Flows ===
 
   let activeSyncPromise = null;
   let hasPendingSyncRequest = false;
+  let nextSyncProject = '';
 
   function syncCurrentProject(explicitProjectId = state.status.project_id, { silent = false } = {}) {
+    if (destroyed) return Promise.resolve(null);
     const projectId = explicitProjectId || state.status.project_id;
     if (!projectId) {
       refreshLocalLedger('');
       render();
       return Promise.resolve(null);
     }
+    nextSyncProject = projectId;
     if (activeSyncPromise) {
       hasPendingSyncRequest = true;
       return activeSyncPromise;
     }
     state.syncingLog = true;
-    if (!silent) render();
+    render();
 
-    activeSyncPromise = (async () => {
+    // Install ownership before loadCursor (or any other synchronous failure).
+    activeSyncPromise = Promise.resolve().then(async () => {
       let finalResult = null;
+      let firstPass = true;
       try {
         do {
-          hasPendingSyncRequest = false;
-          const currentProj = state.status.project_id || projectId;
-          const afterSeq = loadCursor(storage, currentProj);
-          if (!silent) setBanner('正在更新拍摄记录…', { tone: 'busy', code: 'GET_LOG' });
-          const result = await client.syncLog(
-            afterSeq,
-            currentProj,
-            async (event, context) => {
+          if (!firstPass) hasPendingSyncRequest = false;
+          firstPass = false;
+          const currentProj = nextSyncProject;
+          const connection = connectionVersion;
+          const project = projectVersion;
+          const isCurrent = () => !destroyed && state.connected &&
+            connection === connectionVersion && project === projectVersion &&
+            state.status.project_id === currentProj;
+          try {
+            const afterSeq = loadCursor(storage, currentProj);
+            if (!silent && isCurrent()) setBanner('正在更新拍摄记录…', { tone: 'busy', code: 'GET_LOG' });
+            const result = await client.syncLog(afterSeq, currentProj, async (event, context) => {
+              if (event?.project_id !== currentProj) throw new BleClientError('invalid_log_event', 'Unexpected project in log stream');
               await persistEventToStorage(storage, event, context);
-            }
-          );
-          refreshLocalLedger(currentProj);
-          if (result?.snapshot && Number.isSafeInteger(result.snapshot.event_seq)) {
-            state.status.event_seq = Math.max(state.status.event_seq, result.snapshot.event_seq);
-          }
-          if (result?.snapshot && Number.isSafeInteger(result.snapshot.take_id)) {
-            state.status.take_id = Math.max(state.status.take_id, result.snapshot.take_id);
-          }
-          finalResult = result;
-          if (!silent) {
-            setBanner(`拍摄记录已更新，共 ${state.ledger.takes.length} 段`, {
-              tone: 'ok',
-              code: 'SYNC_OK',
             });
+            finalResult = result;
+            if (isCurrent()) {
+              const recovering = Boolean(state.ledgerReadError || state.ledgerSyncError);
+              refreshLocalLedger(currentProj);
+              if (state.ledgerReadError) {
+                finalResult = null;
+                state.ledgerSyncError = { ...state.ledgerReadError };
+                continue;
+              }
+              if (Number.isSafeInteger(result?.snapshot?.event_seq)) {
+                state.status.event_seq = Math.max(state.status.event_seq, result.snapshot.event_seq);
+              }
+              if (Number.isSafeInteger(result?.snapshot?.take_id)) {
+                state.status.take_id = Math.max(state.status.take_id, result.snapshot.take_id);
+              }
+              if (state.ledger.after_seq < state.status.event_seq) {
+                state.ledgerSyncError = { project_id: currentProj, code: 'sync_incomplete', message: '手机记录尚未更新完整' };
+                finalResult = null;
+                setBanner('手机拍摄记录尚未更新完整，请稍后更新拍摄记录', { tone: 'warn', code: 'ledger_not_updated' });
+              } else {
+                state.ledgerSyncError = null;
+              }
+              if (!state.ledgerSyncError && !state.templateSaveError && (!silent || recovering)) {
+                setBanner(`拍摄记录已更新，共 ${state.ledger.takes.length} 段`, { tone: 'ok', code: 'SYNC_OK' });
+              }
+            }
+          } catch (error) {
+            finalResult = null;
+            if (isCurrent()) {
+              refreshLocalLedger(currentProj);
+              state.ledgerSyncError = { project_id: currentProj, code: error?.code || error?.name || 'sync_failed', message: error?.message || '' };
+              setBanner('手机拍摄记录更新失败；设备记录可能已修改，本地副本尚未更新完整', {
+                tone: 'error', code: 'ledger_sync_failed', detail: error?.message || '',
+              });
+            }
           }
-        } while (hasPendingSyncRequest && state.connected);
+        } while (hasPendingSyncRequest && state.connected && !destroyed);
         return finalResult;
-      } catch (error) {
-        refreshLocalLedger(projectId);
-        if (!silent) {
-          handleError('更新拍摄记录', error);
-        }
-        return null;
       } finally {
         state.syncingLog = false;
         activeSyncPromise = null;
         hasPendingSyncRequest = false;
-        render();
+        if (!destroyed) render();
       }
-    })();
+    });
     return activeSyncPromise;
   }
 
@@ -3002,6 +3526,8 @@ export function createApp({
   function disconnect() {
     try {
       client.disconnect();
+      void releaseWakeLock();
+      hardwareClockAnchor = null;
       state.connected = false;
       state.connecting = false;
       setBanner('已断开遥控器', { tone: 'idle', code: 'DISCONNECTED' });
@@ -3051,7 +3577,6 @@ export function createApp({
       state.status.target_cameras = validTarget ? reply.target_cameras : null;
       state.status.selectionSupported = state.status.selectionSupported && validTarget;
       state.status.active_participants = state.status.selectionSupported ? 0 : null;
-      state.settingsExpanded = false;
       if (Number.isSafeInteger(reply.event_seq)) state.status.event_seq = reply.event_seq;
       if (Number.isSafeInteger(reply.take_id)) state.status.take_id = reply.take_id;
       refreshLocalLedger(state.status.project_id);
@@ -3065,9 +3590,10 @@ export function createApp({
   }
 
   async function selectAction(actionId, pointId = '', targetCameras = state.status.target_cameras) {
+    if (rejectTemplateMismatch()) return null;
     // Recording guard: strictly block switching action or camera target when not idle!
     if (state.status.phase !== 'idle' || pendingStart) {
-      setBanner('保存动作失败：请先停止录像。拍完的片段可通过“修改拍摄内容”更正。', {
+      setBanner('保存动作失败：请先停止录像。拍完的片段可通过“改归属”更正。', {
         tone: 'error',
         code: 'recording_active',
       });
@@ -3178,16 +3704,20 @@ export function createApp({
   }
 
   function stepAction(direction = 1) {
-    if (state.status.phase !== 'idle' || pendingStart) {
-      setBanner('请先停止录像。拍完的片段可通过“修改拍摄内容”更正。', {
-        tone: 'error',
-        code: 'recording_active',
-      });
-      render();
+    if (rejectTemplateMismatch()) return Promise.resolve(null);
+    if (!state.connected || state.status.phase !== 'idle' || pendingStart || state.pendingSelect) {
+      if (state.status.phase !== 'idle' || pendingStart) {
+        setBanner('请先停止录像。拍完的片段可通过“改归属”更正。', {
+          tone: 'error',
+          code: 'recording_active',
+        });
+        render();
+      }
       return Promise.resolve(null);
     }
-    const list = getFilteredActions();
-    const candidates = list.length > 0 ? list : state.template.actions;
+    const candidates = [...state.template.actions].sort(
+      (a, b) => (a.order ?? 0) - (b.order ?? 0) || a.action_id.localeCompare(b.action_id)
+    );
     if (candidates.length === 0) return Promise.resolve(null);
 
     const currentIdx = candidates.findIndex(a => a.action_id === state.status.action_id);
@@ -3195,13 +3725,26 @@ export function createApp({
     if (currentIdx === -1) {
       targetIdx = direction >= 0 ? 0 : candidates.length - 1;
     } else {
-      targetIdx = (currentIdx + direction + candidates.length) % candidates.length;
+      if (direction < 0 && currentIdx === 0) {
+        return Promise.resolve(null);
+      }
+      if (direction > 0 && currentIdx === candidates.length - 1) {
+        return Promise.resolve(null);
+      }
+      targetIdx = currentIdx + direction;
+      if (targetIdx < 0 || targetIdx >= candidates.length) {
+        return Promise.resolve(null);
+      }
     }
     const target = candidates[targetIdx];
+    if (target.action_id === state.status.action_id) {
+      return Promise.resolve(null);
+    }
     return selectAction(target.action_id, '', state.status.target_cameras);
   }
 
   async function startRecording() {
+    if (rejectTemplateMismatch()) return null;
     if (state.status.phase !== 'idle' || pendingStart || pendingStop || state.pendingSelect) return null;
     if (state.status.selectionSupported === false || !isValidTargetCameras(state.status.target_cameras)) {
       setBanner('开始录像失败：当前遥控器固件暂不支持相机选择，请先升级遥控器固件。', {
@@ -3211,6 +3754,8 @@ export function createApp({
       render();
       return null;
     }
+    void acquireWakeLock();
+    void playKeepAliveVideo();
     const commandId = createCommandId(now());
     const context = {
       projectId: state.status.project_id,
@@ -3257,12 +3802,12 @@ export function createApp({
       }
       pendingStart = null;
       state.pendingStartCommandId = null;
+      void syncCurrentProject(context.projectId, { silent: true });
       if (context.cancelRequested) {
         // Wait for the admitted take ID rather than stopping an older take or
         // sending an unbound STOP while START is still in flight.
         if (!newerStatus || state.status.phase !== 'idle') await stopRecording();
       } else if (!newerStatus) {
-        void acquireWakeLock();
         setBanner('开始请求已收到，正在等待相机确认录像', {
           tone: 'warn',
           code: 'START_ACK',
@@ -3272,6 +3817,7 @@ export function createApp({
       return reply;
     } catch (error) {
       if (connectionVersion === context.connection && state.status.project_id === context.projectId) {
+        void releaseWakeLock();
         handleError('开始录像', error);
       }
       return null;
@@ -3286,6 +3832,7 @@ export function createApp({
   }
 
   async function stopRecording() {
+    void releaseWakeLock();
     if (pendingStart) {
       pendingStart.cancelRequested = true;
       setBanner('已请求停止，正在等待遥控器确认本段编号…', { tone: 'busy' });
@@ -3342,67 +3889,106 @@ export function createApp({
     return operation;
   }
 
-  async function markDiscard(takeId, discard) {
-    setBanner(`正在${discard ? '标记不使用' : '重新保留'}第 ${takeId} 段…`, {
-      tone: 'busy',
-      code: 'MARK_DISCARD',
-    });
+  function openTakeReassign(takeId, projectId) {
+    if (rejectTemplateMismatch()) return false;
+    if (destroyed || !state.connected || !projectId || projectId !== state.status.project_id) return false;
+    refreshLocalLedger(projectId);
+    if (state.ledgerReadError || state.ledger.project_id !== projectId) return false;
+    const take = state.ledger.takes.find(t => t.take_id === takeId && t.ended);
+    if (!take) return false;
+    state.editingReassignTakeId = takeId;
+    state.reassignDrafts.set(takeId, { action_id: take.action_id || state.template.actions[0]?.action_id || '', point_id: take.point_id || '' });
+    switchView('records');
+    const entry = takeItemCache.get(takeId);
+    if (!entry) return false;
+    entry.actionSelect.focus({ preventScroll: true });
+    const viewport = el('view-records');
+    const panelRect = entry.panel.getBoundingClientRect();
+    const viewRect = viewport.getBoundingClientRect();
+    if (panelRect.bottom > viewRect.bottom) viewport.scrollTop += panelRect.bottom - viewRect.bottom;
+    if (panelRect.top < viewRect.top) viewport.scrollTop -= viewRect.top - panelRect.top;
+    return true;
+  }
+
+  function canEditTake(takeId, projectId) {
+    if (!state.connected || projectId !== state.status.project_id) return false;
+    refreshLocalLedger(projectId);
+    if (state.ledgerReadError || state.ledger.project_id !== projectId ||
+        !state.ledger.takes.some(take => take.take_id === takeId)) {
+      setBanner('手机记录无法读取或找不到本段，未向设备发送修改；请先更新拍摄记录', {
+        tone: 'error', code: 'ledger_unavailable',
+      });
+      render();
+      return false;
+    }
+    return true;
+  }
+
+  async function markDiscard(takeId, discard, projectId = state.status.project_id) {
+    if (!canEditTake(takeId, projectId)) return null;
+    const connection = connectionVersion;
+    const project = projectVersion;
+    setBanner(`正在${discard ? '标记不使用' : '重新保留'}第 ${takeId} 段…`, { tone: 'busy', code: 'MARK_DISCARD' });
     try {
-      const reply = await client.request({
-        cmd: 'MARK_DISCARD',
-        project_id: state.status.project_id,
-        take_id: takeId,
-        discard: Boolean(discard),
-      });
-      await syncCurrentProject(state.status.project_id);
-      setBanner(`第 ${takeId} 段已${discard ? '标记为不使用' : '重新保留'}`, {
-        tone: 'ok',
-        code: 'DISCARD_OK',
-      });
+      const reply = await client.request({ cmd: 'MARK_DISCARD', project_id: projectId, take_id: takeId, discard: Boolean(discard) });
+      if (connection !== connectionVersion || project !== projectVersion || projectId !== state.status.project_id) return reply;
+      if (reply?.ok !== true) throw new BleClientError(reply?.error || 'request_rejected', 'MARK_DISCARD rejected', { reply });
+      if (Number.isSafeInteger(reply.event_seq)) state.status.event_seq = Math.max(state.status.event_seq, reply.event_seq);
+      state.ledgerSyncError = { project_id: projectId, code: 'sync_pending', message: '设备已修改，手机记录尚未更新' };
+      const synced = await syncCurrentProject(projectId);
+      if (connection !== connectionVersion || project !== projectVersion || projectId !== state.status.project_id) return reply;
+      if (synced && !state.ledgerReadError && !state.ledgerSyncError) {
+        setBanner(`第 ${takeId} 段已${discard ? '标记为不使用' : '重新保留'}`, { tone: 'ok', code: 'DISCARD_OK' });
+      } else {
+        setBanner('设备已修改片段用途，手机记录尚未更新；请稍后更新拍摄记录', { tone: 'warn', code: 'ledger_not_updated' });
+      }
       render();
       return reply;
     } catch (error) {
-      handleError('修改片段用途', error);
+      if (connection === connectionVersion && project === projectVersion) handleError('修改片段用途', error);
       return null;
     }
   }
 
-  async function reassignTake(takeId, actionId, pointId = '') {
-    if (!actionId) return null;
-    setBanner(`正在修改第 ${takeId} 段的拍摄内容…`, {
-      tone: 'busy',
-      code: 'REASSIGN',
-    });
+  async function reassignTake(takeId, actionId, pointId = '', projectId = state.status.project_id) {
+    if (rejectTemplateMismatch()) return null;
+    if (!actionId || !canEditTake(takeId, projectId)) return null;
+    const take = state.ledger.takes.find(t => t.take_id === takeId);
+    if (!take?.ended) return null;
+    const connection = connectionVersion;
+    const project = projectVersion;
+    setBanner(`正在修改第 ${takeId} 段归属…`, { tone: 'busy', code: 'REASSIGN' });
     try {
-      const reply = await client.request({
-        cmd: 'REASSIGN',
-        project_id: state.status.project_id,
-        take_id: takeId,
-        action_id: actionId,
-        point_id: pointId ?? '',
-      });
+      const reply = await client.request({ cmd: 'REASSIGN', project_id: projectId, take_id: takeId, action_id: actionId, point_id: pointId ?? '' });
+      if (connection !== connectionVersion || project !== projectVersion || projectId !== state.status.project_id) return reply;
+      if (reply?.ok !== true) throw new BleClientError(reply?.error || 'request_rejected', 'REASSIGN rejected', { reply });
       state.editingReassignTakeId = null;
       state.reassignDrafts.delete(takeId);
-      await syncCurrentProject(state.status.project_id);
-      setBanner(`第 ${takeId} 段的拍摄内容已修改`, {
-        tone: 'ok',
-        code: 'REASSIGN_OK',
-      });
+      if (Number.isSafeInteger(reply.event_seq)) state.status.event_seq = Math.max(state.status.event_seq, reply.event_seq);
+      state.ledgerSyncError = { project_id: projectId, code: 'sync_pending', message: '设备已修改，手机记录尚未更新' };
+      const synced = await syncCurrentProject(projectId);
+      if (connection !== connectionVersion || project !== projectVersion || projectId !== state.status.project_id) return reply;
+      if (synced && !state.ledgerReadError && !state.ledgerSyncError) {
+        setBanner(`第 ${takeId} 段已修改归属`, { tone: 'ok', code: 'REASSIGN_OK' });
+      } else {
+        setBanner('设备已修改片段归属，手机记录尚未更新；请稍后更新拍摄记录', { tone: 'warn', code: 'ledger_not_updated' });
+      }
       render();
       return reply;
     } catch (error) {
-      handleError('修改拍摄内容', error);
+      if (connection === connectionVersion && project === projectVersion) handleError('改归属', error);
       return null;
     }
   }
 
   function importTemplateObject(rawObj, { persist = true, announce = true } = {}) {
     const normalized = normalizeTemplate(rawObj);
-    state.template = normalized;
-    state.templateVersion += 1;
     if (persist) {
       storage.setItem(TEMPLATE_CACHE_KEY, JSON.stringify(normalized));
+      state.templateLoadError = null;
     }
+    state.template = normalized;
+    state.templateVersion += 1;
     if (announce) {
       setBanner(`已载入拍摄清单，共 ${normalized.actions.length} 项`, {
         tone: 'ok',
@@ -3414,14 +4000,16 @@ export function createApp({
   }
 
   async function loadInitialTemplate() {
-    const cached = storage.getItem(TEMPLATE_CACHE_KEY);
-    if (cached) {
-      try {
+    try {
+      const cached = storage.getItem(TEMPLATE_CACHE_KEY);
+      if (cached) {
         importTemplateObject(JSON.parse(cached), { persist: false, announce: false });
         return state.template;
-      } catch {
-        storage.removeItem(TEMPLATE_CACHE_KEY);
       }
+    } catch (error) {
+      // Cache failure must not interrupt safety setup or erase the original bytes.
+      state.templateLoadError = { code: error?.code || error?.name || 'template_cache_unavailable', message: error?.message || '' };
+      handleError('读取拍摄清单缓存', error);
     }
     if (typeof fetchFn === 'function') {
       try {
@@ -3440,8 +4028,13 @@ export function createApp({
   }
 
   function buildBackupPayload() {
-    const projectId = state.status.project_id || state.ledger.project_id || '';
-    if (projectId) refreshLocalLedger(projectId);
+    const projectId = state.status.project_id;
+    refreshLocalLedger(projectId);
+    if (state.ledgerReadError || state.ledger.project_id !== projectId) {
+      state.lastBackupPayload = null;
+      render();
+      return null;
+    }
     const payload = {
       exported_at: new Date(now()).toISOString(),
       project_id: projectId,
@@ -3474,18 +4067,28 @@ export function createApp({
     setTimeout(() => URL.revokeObjectURL(url), 1000)?.unref?.();
   }
 
+  function announceBackup(message, code, payload, tone = 'ok') {
+    if (state.status.project_id !== payload.project_id) return;
+    if (state.ledgerReadError) {
+      setBanner('手机记录读取失败，请修复后再导出', { tone: 'error', code: 'ledger_unavailable' });
+    } else if (localLedgerIncomplete() || payload.after_seq < state.ledger.after_seq || payload.after_seq < state.status.event_seq) {
+      setBanner(`${message}；仅为同项目已有本地副本，手机记录尚未更新完整`, { tone: 'warn', code: 'local_copy_incomplete' });
+    } else {
+      setBanner(message, { tone, code });
+    }
+    renderLedgerStorageNotice();
+  }
+
   async function copyBackup() {
     const payload = buildBackupPayload();
+    if (!payload) return null;
     const json = JSON.stringify(payload, null, 2);
     try {
       if (!clipboard || typeof clipboard.writeText !== 'function') {
         throw new BleClientError('clipboard_unavailable', 'Clipboard API unavailable');
       }
       await clipboard.writeText(json);
-      setBanner('备份已复制', {
-        tone: 'ok',
-        code: 'COPY_OK',
-      });
+      announceBackup('备份已复制', 'COPY_OK', payload);
       return payload;
     } catch (error) {
       handleError('复制备份', error);
@@ -3495,16 +4098,18 @@ export function createApp({
 
   function downloadBackup() {
     const payload = buildBackupPayload();
+    if (!payload) return null;
     const json = JSON.stringify(payload, null, 2);
     const safeProj = (payload.project_id || 'uninitialized').replace(/[^A-Za-z0-9_.-]/g, '_');
     const filename = `${safeProj}_ledger_backup.json`;
     triggerDownload(filename, json);
-    setBanner('备份文件已生成，请留意浏览器的保存提示', { tone: 'ok', code: 'DOWNLOAD_OK' });
+    announceBackup('备份文件已生成，请留意浏览器的保存提示', 'DOWNLOAD_OK', payload);
     return payload;
   }
 
   async function shareBackup() {
     const payload = buildBackupPayload();
+    if (!payload) return null;
     const json = JSON.stringify(payload, null, 2);
     const safeProj = (payload.project_id || 'uninitialized').replace(/[^A-Za-z0-9_.-]/g, '_');
     const filename = `${safeProj}_ledger_backup.json`;
@@ -3514,20 +4119,18 @@ export function createApp({
           title: `拍摄记录备份 ${payload.project_id || ''}`,
           text: json,
         });
-        setBanner('已打开分享窗口', { tone: 'ok', code: 'SHARE_OK' });
+        announceBackup('已打开分享窗口', 'SHARE_OK', payload);
         return payload;
       } catch (error) {
         if (error?.name === 'AbortError') {
-          setBanner('已取消分享', { tone: 'warn', code: 'SHARE_CANCELLED' });
+          announceBackup('已取消分享', 'SHARE_CANCELLED', payload, 'warn');
           return payload;
         }
       }
     }
+    if (state.status.project_id !== payload.project_id || state.ledgerReadError) return null;
     triggerDownload(filename, json);
-    setBanner('此浏览器不能分享，已为你生成备份文件', {
-      tone: 'warn',
-      code: 'SHARE_FALLBACK_DOWNLOAD',
-    });
+    announceBackup('此浏览器不能分享，已为你生成备份文件', 'SHARE_FALLBACK_DOWNLOAD', payload, 'warn');
     return payload;
   }
 
@@ -3536,12 +4139,24 @@ export function createApp({
   const btnToggleSettings = el('btn-toggle-settings');
   if (btnToggleSettings) {
     btnToggleSettings.addEventListener('click', () => {
-      state.settingsExpanded = !state.settingsExpanded;
-      if (state.settingsExpanded && state.activeView !== 'shoot') {
-        switchView('shoot');
+      const modalSettings = el('modal-settings');
+      if (!modalSettings) return;
+      if (modalSettings.open) {
+        void closeDialog(modalSettings);
       } else {
+        for (const id of ['modal-add-point', 'modal-shoot-details']) {
+          const other = el(id);
+          if (other?.open) void closeDialog(other, { immediate: true });
+        }
+        openDialog(modalSettings, { returnFocus: btnToggleSettings });
         render();
       }
+    });
+  }
+  const btnSettingsClose = el('btn-settings-close');
+  if (btnSettingsClose) {
+    btnSettingsClose.addEventListener('click', () => {
+      void closeDialog(el('modal-settings'));
     });
   }
 
@@ -3555,6 +4170,7 @@ export function createApp({
   const btnOpenActionList = el('btn-open-action-list');
   if (btnOpenActionList) {
     btnOpenActionList.addEventListener('click', () => {
+      if (btnOpenActionList.disabled) return;
       switchView('list');
     });
   }
@@ -3576,7 +4192,7 @@ export function createApp({
   const btnOpenRecords = el('btn-open-records');
   if (btnOpenRecords) {
     btnOpenRecords.addEventListener('click', () => {
-      switchView('records');
+      openTakeReassign(Number(btnOpenRecords.dataset.takeId), btnOpenRecords.dataset.projectId);
     });
   }
 
@@ -3626,7 +4242,13 @@ export function createApp({
     });
   }
 
+  const btnImportTemplate = el('btn-import-template');
   const fileInput = el('input-template-file');
+  if (btnImportTemplate && fileInput) {
+    btnImportTemplate.addEventListener('click', () => {
+      fileInput.click();
+    });
+  }
   if (fileInput) {
     fileInput.addEventListener('change', async event => {
       const file = event.target?.files?.[0];
@@ -3697,6 +4319,13 @@ export function createApp({
     });
   }
 
+  const btnGlobalStop = el('btn-global-stop');
+  if (btnGlobalStop) {
+    btnGlobalStop.addEventListener('click', () => {
+      void stopRecording();
+    });
+  }
+
   const btnCopy = el('btn-backup-copy');
   if (btnCopy) {
     btnCopy.addEventListener('click', () => {
@@ -3719,13 +4348,14 @@ export function createApp({
   }
 
   function downloadCsv() {
-    const projectId = state.status.project_id || state.ledger.project_id || 'uninitialized';
-    if (projectId) refreshLocalLedger(projectId);
-    const csvContent = exportLedgerCsv(state.ledger, state.template, { now });
+    const payload = buildBackupPayload();
+    if (!payload) return null;
+    const projectId = payload.project_id || 'uninitialized';
+    const csvContent = exportLedgerCsv(payload, state.template, { now });
     const safeProj = projectId.replace(/[^A-Za-z0-9_.-]/g, '_');
     const filename = `${safeProj}_ledger.csv`;
     triggerDownload(filename, csvContent, 'text/csv;charset=utf-8');
-    setBanner('CSV 拍摄记录已生成，请留意浏览器的保存提示', { tone: 'ok', code: 'CSV_DOWNLOAD_OK' });
+    announceBackup('CSV 拍摄记录已生成，请留意浏览器的保存提示', 'CSV_DOWNLOAD_OK', payload);
     return csvContent;
   }
 
@@ -3755,87 +4385,271 @@ export function createApp({
     });
   }
 
+  function detailIdentityMatches(context) {
+    return !destroyed && context.projectId === state.status.project_id &&
+      context.templateId === state.template.template_id && context.deviceTemplateId === state.status.template_id;
+  }
+  function currentLedgerFailure() {
+    return state.ledgerReadError || (state.ledgerSyncError?.code !== 'sync_pending' ? state.ledgerSyncError : null);
+  }
+  function showShootDetails({ kind = 'shoot', focusOrphans = false } = {}) {
+    if (kind !== 'shoot' && kind !== 'ledger') return;
+    if (kind === 'shoot' && !state.status.action_id) return;
+    const dialog = el('modal-shoot-details');
+    if (dialog.open || dialogRecords.get(dialog)?.closingPromise) return;
+    const context = {
+      kind, projectId: state.status.project_id, templateId: state.template.template_id, deviceTemplateId: state.status.template_id,
+      actionId: state.status.action_id, pointId: state.status.point_id || '',
+      failure: currentLedgerFailure(),
+    };
+    shootDetailsContext = context;
+    const content = el('shoot-details-content');
+    const type = el('confirmed-action-type');
+    const group = el('confirmed-action-group');
+    content.replaceChildren();
+    const add = (label, value, node = null) => {
+      const dt = doc.createElement('dt');
+      dt.textContent = label;
+      const dd = node || doc.createElement('dd');
+      dd.hidden = false;
+      dd.textContent = value;
+      content.append(dt, dd);
+    };
+    const orphans = el('shoot-orphan-points');
+    orphans.replaceChildren();
+    orphans.hidden = kind === 'ledger';
+    if (kind === 'ledger') {
+      setTextIfChanged(el('shoot-details-title'), '手机记录详情');
+      add('项目', context.projectId || '未创建项目');
+      add('代码', context.failure?.code || '');
+      add('完整信息', context.failure?.message || '手机记录已更新');
+      // Preserve the original semantic nodes without showing shoot fields in ledger details.
+      type.hidden = true; group.hidden = true;
+      content.append(type, group);
+    } else {
+      const action = currentTemplateAction(context.actionId);
+      const point = action?.points.find(p => p.point_id === context.pointId);
+      setTextIfChanged(el('shoot-details-title'), '拍摄详情');
+      add('动作编号', context.actionId);
+      add('动作名称', action?.name || '未收录名称');
+      add('点位编号', context.pointId || '未指定点位');
+      add('点位名称', context.pointId ? point && !point.orphan ? point.name : '未收录名称' : '未指定点位');
+      add('类型', action ? action.type === 'static' ? '静态' : '动态' : '未收录名称', type);
+      add('区域', action?.group || '未收录名称', group);
+      add('保持亮屏', screenAwakeMode === 'idle' ? '未申请保持亮屏' : screenAwakeMessage);
+      for (const point of action?.points.filter(p => p.orphan) || []) {
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'btn';
+        button.dataset.renamePointId = point.point_id;
+        button.dataset.actionId = context.actionId;
+        button.textContent = `给 ${point.point_id} 补名`;
+        button.addEventListener('click', async () => {
+          await closeDialog(dialog);
+          const target = state.template.actions.find(a => a.action_id === context.actionId)?.points.find(p => p.point_id === point.point_id && p.orphan);
+          if (!detailIdentityMatches(context) || state.status.action_id !== context.actionId || !target) return;
+          showPointDialog({ actionId: context.actionId, pointId: point.point_id, returnFocus: el('btn-current-details') });
+        });
+        orphans.append(button);
+      }
+    }
+    openDialog(dialog);
+    if (focusOrphans) orphans.querySelector('button')?.focus();
+  }
+  function closeStaleShootDetails() {
+    const context = shootDetailsContext;
+    if (!context || !el('modal-shoot-details').open) return;
+    const stale = context.kind === 'shoot'
+      ? !detailIdentityMatches(context) || context.actionId !== state.status.action_id || context.pointId !== (state.status.point_id || '')
+      : context.projectId !== state.status.project_id || !currentLedgerFailure();
+    if (stale) void closeDialog(el('modal-shoot-details'), { immediate: true });
+  }
+  let pointDialogContext = null;
+  function showPointDialog({ actionId = state.status.action_id, pointId = null, returnFocus = doc.activeElement } = {}) {
+    if (rejectTemplateMismatch()) return;
+    const action = currentTemplateAction(actionId);
+    if (!action) {
+      setBanner('请先选择拍摄动作后再添加点位', { tone: 'warn' });
+      render();
+      return;
+    }
+    const rename = pointId !== null;
+    const point = rename ? action.points.find(p => p.point_id === pointId && p.orphan) : null;
+    if (rename && !point) return;
+    if (modalAddPoint.open || dialogRecords.get(modalAddPoint)?.closingPromise) return;
+    pointDialogContext = { deviceTemplateId: state.status.template_id, projectId: state.status.project_id, actionId: action.action_id, templateId: state.template.template_id, pointId: point?.point_id ?? null };
+    inputAddPointId.value = point?.point_id ?? deduceNextPointId(action.points);
+    inputAddPointId.readOnly = rename;
+    inputAddPointId.maxLength = rename ? 31 : 16;
+    inputAddPointId.pattern = rename ? '^[A-Za-z0-9_.\\-]+$' : '^[A-Za-z0-9_\\-]+$';
+    inputAddPointName.maxLength = POINT_NAME_MAX_LENGTH;
+    inputAddPointName.required = rename;
+    inputAddPointName.value = '';
+    setTextIfChanged(el('modal-add-point-title'), rename ? `给 ${point.point_id} 补中文名` : '现场新增点位');
+    setTextIfChanged(el('btn-confirm-add-point'), rename ? '保存中文名' : '保存并选中');
+    setTextIfChanged(msgAddPointError, '');
+    openDialog(modalAddPoint, { returnFocus });
+    inputAddPointName.focus();
+  }
   if (btnTriggerAddPoint) {
     btnTriggerAddPoint.setAttribute('aria-haspopup', 'dialog');
-    btnTriggerAddPoint.addEventListener('click', () => {
-      const currentActionId = state.status.action_id;
-      if (!currentActionId) {
-        setBanner('请先选择拍摄动作后再添加点位', { tone: 'warn' });
-        render();
-        return;
-      }
-      const act = state.template.actions.find(a => a.action_id === currentActionId);
-      const nextId = deduceNextPointId(act?.points || []);
-      if (inputAddPointId) inputAddPointId.value = nextId;
-      if (inputAddPointName) inputAddPointName.value = '';
-      if (msgAddPointError) setTextIfChanged(msgAddPointError, '');
-      openDialog(modalAddPoint);
-      inputAddPointName?.focus?.();
-    });
+    btnTriggerAddPoint.addEventListener('click', () => showPointDialog());
   }
-
-  if (btnCancelAddPoint) {
-    btnCancelAddPoint.addEventListener('click', (e) => {
-      e.preventDefault();
-      closeDialog(modalAddPoint);
-    });
-  }
-
-  if (modalAddPoint) {
-    modalAddPoint.addEventListener('click', (e) => {
-      if (e.target === modalAddPoint) {
-        closeDialog(modalAddPoint);
-      }
-    });
-  }
-
-  if (formAddPoint) {
-    formAddPoint.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      if (isNameComposing) return;
-      const rawId = inputAddPointId?.value?.trim() || '';
-      if (!isValidPointId(rawId)) {
-        if (msgAddPointError) {
-          setTextIfChanged(msgAddPointError, '点位编号仅支持 1-16 位英文字母、数字、下划线及短横线 (ASCII)');
+  el('btn-current-details')?.addEventListener('click', () => showShootDetails());
+  el('btn-ledger-details')?.addEventListener('click', () => showShootDetails({ kind: 'ledger' }));
+  el('btn-shoot-details-close')?.addEventListener('click', () => { void closeDialog(el('modal-shoot-details')); });
+  el('btn-rename-point')?.addEventListener('click', () => {
+    const action = state.template.actions.find(a => a.action_id === state.status.action_id);
+    const selected = action?.points.find(p => p.point_id === state.status.point_id && p.orphan);
+    if (selected) showPointDialog({ pointId: selected.point_id });
+    else showShootDetails({ focusOrphans: true });
+  });
+  btnCancelAddPoint?.addEventListener('click', () => { void closeDialog(modalAddPoint); });
+  function bindSheetInteractions(dialog) {
+    if (!dialog) return () => {};
+    const handle = dialog.querySelector('.sheet-handle');
+    let drag = null;
+    if (handle) handle.style.touchAction = 'pinch-zoom';
+    const reset = () => {
+      if (drag && handle?.hasPointerCapture?.(drag.id)) handle.releasePointerCapture(drag.id);
+      drag = null;
+      dialog.style.transform = '';
+    };
+    const onDown = e => {
+      if (e.isPrimary === false || (e.button !== undefined && e.button !== 0) || dialogRecords.get(dialog)?.closingPromise) return;
+      drag = { id: e.pointerId, x: e.clientX, y: e.clientY, distance: 0 };
+      handle.setPointerCapture?.(e.pointerId);
+    };
+    const onMove = e => {
+      if (!drag || drag.id !== e.pointerId) return;
+      const dy = e.clientY - drag.y;
+      if (Math.abs(e.clientX - drag.x) > Math.max(16, dy)) { reset(); return; }
+      drag.distance = Math.max(0, dy);
+      if (!win?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) dialog.style.transform = `translateY(${drag.distance}px)`;
+    };
+    const onUp = e => {
+      if (!drag || drag.id !== e.pointerId) return;
+      const shouldClose = drag.distance >= 72;
+      if (shouldClose) void closeDialog(dialog);
+      reset();
+    };
+    const onCancel = e => { e.preventDefault(); void closeDialog(dialog); };
+    const onBackdrop = e => {
+      if (e.target !== dialog) return;
+      const rect = dialog.getBoundingClientRect();
+      if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) void closeDialog(dialog);
+    };
+    const onClose = () => {
+      if (dialog.open) return;
+      reset();
+      const record = dialogRecords.get(dialog);
+      if (!record) return;
+      dialogRecords.delete(dialog);
+      record.animation?.cancel?.();
+      if (dialog.id === 'modal-shoot-details') shootDetailsContext = null;
+      if (dialog.id === 'modal-settings') {
+        const btn = el('btn-toggle-settings');
+        if (btn) {
+          btn.setAttribute('aria-expanded', 'false');
+          btn.classList.remove('is-active');
         }
-        return;
       }
-      const currentActionId = state.status.action_id;
-      const act = state.template.actions.find(a => a.action_id === currentActionId);
-      if (!act) {
-        if (msgAddPointError) {
-          setTextIfChanged(msgAddPointError, '未找到当前动作，请重新选择');
-        }
-        return;
+      if (destroyed) return;
+      const target = record.returnFocus;
+      let visible = Boolean(target?.isConnected && !target.disabled && !target.closest('[hidden]'));
+      for (let node = target; visible && node; node = node.parentElement) {
+        const style = win.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') visible = false;
       }
-      act.points = act.points || [];
-      if (act.points.some(p => p.point_id.toUpperCase() === rawId.toUpperCase())) {
-        if (msgAddPointError) {
-          setTextIfChanged(msgAddPointError, `点位编号 ${rawId} 已存在，请使用其他编号`);
-        }
-        return;
-      }
-      const rawName = (inputAddPointName?.value?.trim() || rawId).slice(0, 32);
-      act.points.push({ point_id: rawId, name: rawName });
-      try {
-        storage.setItem(TEMPLATE_CACHE_KEY, JSON.stringify(state.template));
-      } catch (_) {}
-      state.templateVersion += 1;
-      closeDialog(modalAddPoint);
-      const res = await selectAction(act.action_id, rawId);
-      if (res && res.ok === true) {
-        setBanner(`已添加并选中点位 ${rawId}`, { tone: 'ok' });
-      }
-      render();
-    });
+      (visible ? target : el('btn-toggle-settings'))?.focus?.();
+    };
+    dialog.addEventListener('cancel', onCancel);
+    dialog.addEventListener('click', onBackdrop);
+    dialog.addEventListener('close', onClose);
+    handle?.addEventListener('pointerdown', onDown);
+    handle?.addEventListener('pointermove', onMove);
+    handle?.addEventListener('pointerup', onUp);
+    handle?.addEventListener('pointercancel', reset);
+    return () => {
+      reset();
+      dialog.removeEventListener('cancel', onCancel);
+      dialog.removeEventListener('click', onBackdrop);
+      dialog.removeEventListener('close', onClose);
+      handle?.removeEventListener('pointerdown', onDown);
+      handle?.removeEventListener('pointermove', onMove);
+      handle?.removeEventListener('pointerup', onUp);
+      handle?.removeEventListener('pointercancel', reset);
+    };
   }
+  const unbindSheets = [modalAddPoint, el('modal-shoot-details'), el('modal-settings')].map(bindSheetInteractions);
+
+  formAddPoint?.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (isNameComposing || !pointDialogContext || dialogRecords.get(modalAddPoint)?.closingPromise) return;
+    const context = pointDialogContext;
+    const rename = context.pointId !== null;
+    const rawId = inputAddPointId.value.trim();
+    if (!(rename ? rawId === context.pointId && isValidAsciiId(rawId, 31) : isValidPointId(rawId))) {
+      setTextIfChanged(msgAddPointError, '点位编号仅支持 1-16 位英文字母、数字、下划线及短横线 (ASCII)');
+      return;
+    }
+    if (!templateMatchesDevice() || !detailIdentityMatches(context)) {
+      setTextIfChanged(msgAddPointError, '拍摄清单已切换，请取消后重新打开');
+      return;
+    }
+    const candidate = normalizeTemplate(state.template);
+    const action = candidate.actions.find(a => a.action_id === context.actionId);
+    if (!action) { setTextIfChanged(msgAddPointError, '未找到当前动作，请重新选择'); return; }
+    const existing = action.points.find(p => p.point_id.toUpperCase() === rawId.toUpperCase());
+    if (existing && (!rename || !existing.orphan)) {
+      setTextIfChanged(msgAddPointError, `点位编号 ${rawId} 已存在，请使用其他编号`);
+      return;
+    }
+    if (rename && !existing) { setTextIfChanged(msgAddPointError, '待补名点位已变更，请重新打开'); return; }
+    const rawName = inputAddPointName.value.trim() || (rename ? '' : rawId);
+    // Match the input's UTF-16 limit; reject overlong values rather than truncating Unicode.
+    if (!rawName || rawName.length > POINT_NAME_MAX_LENGTH) {
+      setTextIfChanged(msgAddPointError, `请填写不超过 ${POINT_NAME_MAX_LENGTH} 字符的点位名称`);
+      return;
+    }
+    if (rename) { existing.name = rawName; delete existing.orphan; }
+    else action.points.push({ point_id: rawId, name: rawName });
+    try {
+      storage.setItem(TEMPLATE_CACHE_KEY, JSON.stringify(candidate));
+    } catch (error) {
+      setTextIfChanged(msgAddPointError, '点位未保存，请腾出手机存储空间后再试；输入已保留');
+      return;
+    }
+    state.template = candidate;
+    state.templateVersion += 1;
+    if (rename) dialogRecords.get(modalAddPoint).returnFocus = el('btn-current-details');
+    await closeDialog(modalAddPoint);
+    if (destroyed) return;
+    if (rename) {
+      setBanner(`已保存 ${rawId} 的中文名`, { tone: 'ok' });
+    } else {
+      // A local dictionary save survives a rejected/busy device selection.
+      const reply = detailIdentityMatches(context) && state.status.action_id === context.actionId
+        ? await selectAction(context.actionId, rawId) : null;
+      if (reply?.ok === true) setBanner(`已添加并选中点位 ${rawId}`, { tone: 'ok' });
+      else setBanner(`点位 ${rawId} 已保存，但设备未选中，请稍后点选`, { tone: 'warn' });
+    }
+    render();
+  });
 
   const onVisibilityChange = () => {
+    hardwareClockAnchor = null;
+    renderRecordElapsed(true);
     if (doc?.visibilityState === 'visible') {
       if (state.status.phase === 'recording') {
         void acquireWakeLock();
       }
       if (state.connected && state.status.project_id) {
+        const connection = connectionVersion;
+        const project = projectVersion;
+        void client.getStatus().then(snapshot => {
+          if (!destroyed && state.connected && connection === connectionVersion && project === projectVersion) applyStatusSnapshot(snapshot);
+        }).catch(error => { if (!destroyed) handleError('更新相机状态', error); });
         void syncCurrentProject(state.status.project_id, { silent: true });
       }
     }
@@ -3851,20 +4665,29 @@ export function createApp({
         (typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
       const next = current === 'dark' ? 'light' : 'dark';
       rootDocEl.setAttribute('data-theme', next);
-      storage.setItem(THEME_CACHE_KEY, next);
+      try { storage.setItem(THEME_CACHE_KEY, next); } catch {
+        // Theme is optional; changing it never depends on durable storage.
+      }
     });
   }
 
   // Restore saved theme if present
-  const savedTheme = storage.getItem(THEME_CACHE_KEY);
+  let savedTheme = null;
+  try { savedTheme = storage.getItem(THEME_CACHE_KEY); } catch {
+    // Optional preferences must not prevent core monitor/cleanup initialization.
+  }
   if (savedTheme === 'light' || savedTheme === 'dark') {
     doc?.documentElement?.setAttribute('data-theme', savedTheme);
   }
 
   const onWindowResize = () => {
+    updateSheetViewport();
     render();
+    schedulePointReveal();
   };
   win?.addEventListener?.('resize', onWindowResize);
+  el('point-pills')?.addEventListener('scroll', updatePointOverflowMarkers, { passive: true });
+  el('point-pills')?.addEventListener('focusin', onPointFocusIn, { passive: true });
 
   // Periodic staleness monitor: updates only camera freshness and record status header
   const staleTimer = setInterval(() => {
@@ -3875,6 +4698,7 @@ export function createApp({
   staleTimer?.unref?.();
 
   // Initialize template and initial render
+  setScreenAwakeNotice('idle', '未申请保持亮屏');
   render();
   const readyPromise = loadInitialTemplate();
 
@@ -3911,6 +4735,21 @@ export function createApp({
     releaseWakeLock,
     disconnect,
     destroy() {
+      destroyed = true;
+      shootResizeObserver?.disconnect();
+      if (feedbackTimer !== null) win?.clearTimeout(feedbackTimer);
+      feedbackVersion += 1;
+      if (pointRevealRaf !== null) win?.cancelAnimationFrame?.(pointRevealRaf);
+      if (pointFocusRaf !== null) win?.cancelAnimationFrame?.(pointFocusRaf);
+      el('point-pills')?.removeEventListener('scroll', updatePointOverflowMarkers);
+      el('point-pills')?.removeEventListener('focusin', onPointFocusIn);
+      hardwareClockAnchor = null;
+      sheetViewport?.removeEventListener?.('resize', updateSheetViewport);
+      sheetViewport?.removeEventListener?.('scroll', updateSheetViewport);
+      void closeDialog(modalAddPoint, { immediate: true });
+      void closeDialog(el('modal-shoot-details'), { immediate: true });
+      void closeDialog(el('modal-settings'), { immediate: true });
+      for (const unbind of unbindSheets) unbind();
       clearInterval(staleTimer);
       win?.removeEventListener?.('resize', onWindowResize);
       doc?.removeEventListener?.('visibilitychange', onVisibilityChange);
