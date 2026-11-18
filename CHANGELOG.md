@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Added
+- Built-in 2026 GMP HVAC smoke validation preset library (`schema/presets/`,
+  `phone/presets/` covering 7 cleanroom workflows), Record 4 `.docx` table
+  parser with explicit site errata support (`tools/presets_corrections_2026.json`),
+  LAN HTTPS helper (`tools/serve_https.py`), and `AbortSignal` queue cancellation
+  plus priority `'safety'` STOP lane (33rd emergency slot) in `phone/ble-client.mjs`.
+- Phone-side elapsed display anchored to same-boot controller monotonic time,
+  and local naming of recovered field points without rewriting journal events.
+- Read-only shooting/error details, arbitrary recovered-point naming, point-rail
+  reveal and a direct recent-take attribution editor with controller-interval timing.
+- Global native settings sheet and truthful cross-view capture status with a
+  direct STOP entry backed by the existing single-flight recording lifecycle.
 
 - C3 take lifecycle with independent camera evidence, durable-before-start admission,
   cancellation during START, explicit single-camera continuation and revised LEDs.
@@ -36,6 +47,23 @@ All notable changes to this project are documented in this file.
   single-camera history distinguishes non-participation from failed recording.
 
 ### Changed
+- V4 phone workbench redesign (`[看板] · [现场] · [记录]` three-tab architecture):
+  button-embedded live recording timer, unified A/B camera status & selection
+  controls with `相机信号曾闪断` indicator, multi-select batch discard/reassign
+  bar in Records, modularization of `phone/app.mjs` into `40` focused `.mjs`
+  modules (`<= 655` lines each across `core/`, `controllers/`, `modals/`, `views/`,
+  `presets/`), and Service Worker offline cache bump to `dji-field-ui-v16`
+  (`47` precached static assets).
+- Phone workbench uses flat sections, a separately scrolling observation area
+  and bottom-anchored recording controls; oversized text falls back to a fully
+  scrollable shooting view without covering navigation or shrinking text.
+- Confirmed camera selection uses one shared thumb; native sheets retain modal
+  state through exit, and persistent storage failures remain separate from feedback.
+- Offline phone shell cache advances to v8 for the revised app and styles.
+- Camera summaries and attribution editors regain one light grouping boundary;
+  the current action stays beside recording controls while camera details scroll.
+- Action type and record-presence filters combine independently; field stepping
+  follows the complete ordered template and stops at its endpoints.
 
 - C3 uses `partitions.c3.csv`, preserving NVS/factory offsets and allocating
   approximately 1.94 MiB to LittleFS; automatic power management disabled.
@@ -47,6 +75,35 @@ All notable changes to this project are documented in this file.
   Destructive project reset and legacy text export remain USB-only.
 
 ### Fixed
+- Camera readiness no longer claims START is available when the project's
+  template identity does not match the phone's imported list.
+- Long point names no longer collapse action identifiers into vertical text;
+  bounded long identifiers leave readable space for the point summary.
+- Keyboard focus reveals point pills horizontally with outline clearance,
+  without changing selection, issuing commands or scrolling the page.
+- In-flow feedback no longer covers project/settings controls; global settings
+  preserve the originating view, search and editing context.
+- Disconnected and unfinished-record controls no longer invite impossible edits;
+  native keyboard import and Unicode-sets-compatible point patterns remain usable.
+- Imported or cached foreign templates no longer relabel current capture,
+  historical takes or CSV names; mismatched choices/new START are blocked while
+  safety STOP and raw ledger backups remain available.
+- Denied theme/template-cache reads no longer leave a partially initialized
+  phone UI without its stale-status monitor; failed persistence remains explicit.
+- Phone log sync recovers from synchronous cache-read errors, coalesces trailing
+  requests, fetches final closing-to-idle events and ignores stale-session UI results.
+- Pending screen wake requests are single-flight; late or superseded locks are
+  released. Fallback video is decodable H.264, and playback failure is explicit.
+- Recovered points respect template identity and the historical ID contract;
+  point writes fail visibly before changing the dictionary or device selection.
+- Normal recording no longer triggers a false readiness alarm; CSV durations
+  remain blank when begin/end monotonic clocks belong to different boots.
+- Native point-entry sheets track the visual viewport, restore focus and allow
+  handle-only dismissal without blocking form scrolling or page zoom.
+- A failed target-project cache read now isolates visible records and blocks
+  mixed-project backups and stale record edits without deleting cached data.
+- Device edits and local-copy sync are reported separately; failed background
+  sync remains visible, and exports of an incomplete local copy retain a warning.
 
 - Preserve the last observed recording timer in TAKE_END instead of overwriting
   it with the camera's post-stop idle zero; found during the real dual-camera test.
@@ -66,6 +123,23 @@ All notable changes to this project are documented in this file.
   temporary fixture roots, with production output-symlink protection unchanged.
 
 ### Verified
+- Host full suite (`tests/run_host_tests.sh`): `29` BLE client tests, `114` phone
+  UI tests, `18` archive pipeline tests, `15` MP4 inspector tests, C11 ASan/UBSan
+  controller/journal/service/selection suites, and all `9` handshake scenarios
+  passing (`0` failures, `0` skipped); `target_cameras` firmware flashed to
+  CORE-ESP32-C3 (`630,640` bytes app), legacy test journal backed up & reset
+  cleanly via USB, and V4 UI loading verified over trusted LAN HTTPS in iPhone
+  Bluefy (real dual-camera field shooting and physical media matching pending).
+- Phone UI/BLE Node regression: 80 tests passed after the reliability changes.
+- Chromium mobile/desktop checks covered critical-control access, long names,
+  horizontal point scrolling, three-view navigation and native dialog cancel/focus.
+  A synthetic doubled-font small-screen check retained recording access.
+- Embedded fallback MP4 passed ffprobe and ffmpeg decoding; updated v5 phone
+  assets loaded offline. These checks do not prove Bluefy screen-awake behavior,
+  real mobile keyboard handling or physical BLE/camera acceptance.
+- An independent exploratory assessment reproduced two ledger-isolation and
+  sync-reporting defects. After fixes, its own isolated reproductions and recovery
+  checks no longer triggered either defect; this is not a whole-system bug-free claim.
 
 - Built the C3 application, bootloader and journal partition table with official
   ESP-IDF 5.5.2, RISC-V GCC 14.2.0 and LittleFS 1.23.1; application is 629888 bytes.

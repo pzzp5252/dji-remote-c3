@@ -418,7 +418,8 @@ def _revision_rows(events, takes):
 def _ledger_sheets(mapping):
     actions = {action["action_id"]: action for action in mapping["actions"]["actions"]}
     summary = [["take_id", "project_id", "action_id", "动作名称", "point_id", "点位名称", "分组",
-                "discarded", "segment_no", "source", "boot_id", "A状态", "A时长秒", "B状态", "B时长秒", "匹配等级"]]
+                "discarded", "segment_no", "source", "boot_id", "A状态", "A时长秒", "B状态", "B时长秒", "匹配等级",
+                "complete", "reason", "测试描述"]]
     for take in mapping["takes"]:
         action = actions.get(take["action_id"], {})
         points = {point["point_id"]: point["name"] for point in action.get("points", [])}
@@ -427,7 +428,8 @@ def _ledger_sheets(mapping):
                         take["point_id"], points.get(take["point_id"]), action.get("group"), take["discarded"],
                         take["segment_no"], take["source"], take["boot_id"],
                         a["status"], (a.get("clip_group") or {}).get("duration_sec"),
-                        b["status"], (b.get("clip_group") or {}).get("duration_sec"), take["status"]])
+                        b["status"], (b.get("clip_group") or {}).get("duration_sec"), take["status"],
+                        take.get("complete"), take.get("reason"), action.get("description")])
     files = [["目标相对路径", "相机", "原始完整路径", "原始文件名", "file_size", "MP4创建时间", "创建原始1904秒",
               "时长秒", "take_id", "segment_no", "part_index", "复制核对"]]
     for row in mapping["files"]:

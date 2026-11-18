@@ -136,7 +136,7 @@ npm ci
 tests/run_host_tests.sh
 ```
 
-测试使用 C11、严格编译警告及 ASan/UBSan，覆盖 BOOT 消抖、逐机状态机、严格双机/显式单机准入、单机 STOP 隔离、迟到外部录像/结案后安全停止、选机持久恢复/无效值/START 意图一致性、取消开始、超时、外部录像、END 重试、日志恢复/损坏/写失败回滚/重置、命令身份与掉电恢复，以及手机分片协议、会话隔离、USB 权限限制和日志背压下的 STOP 分发。另有15项 Python MP4 探针、26项 ESM 客户端、24项 jsdom 手机 UI 与16项归档行为测试。主机需安装 Clang、cJSON 开发包（或设置 CJSON_CFLAGS/CJSON_LIBS）、Python 3、Node.js 24，并先运行 `npm ci`。Darwin 编译扩展已由入口处理；Mac 的 Homebrew cJSON 参数见 [开发交接](development-handoff.md)。这些测试不替代真实 LittleFS 掉电和无线链路验证；新增选机固件本轮未刷写/实测。
+测试使用 C11、严格编译警告及 ASan/UBSan，覆盖 BOOT 消抖、逐机状态机、严格双机/显式单机准入、单机 STOP 隔离、迟到外部录像/结案后安全停止、选机持久恢复/无效值/START 意图一致性、取消开始、超时、外部录像、END 重试、日志恢复/损坏/写失败回滚/重置、命令身份与掉电恢复，以及手机分片协议、会话隔离、USB 权限限制和日志背压下的 STOP 分发。另有 15 项 Python MP4 探针、29 项 ESM 客户端、114 项 jsdom 手机 UI 与 18 项归档行为测试。主机需安装 Clang、cJSON 开发包（或设置 CJSON_CFLAGS/CJSON_LIBS）、Python 3、Node.js 24，并先运行 `npm ci`。Darwin 编译扩展已由入口处理；Mac 的 Homebrew cJSON 参数见 [开发交接](development-handoff.md)。这些测试不替代真实 LittleFS 掉电、无线长时链路与真实相机素材验证。
 
 本轮已在 Linux 主机以 Zig cc 0.17.1（C11、ASan/UBSan）执行控制/日志/命令及旧协议回归，并通过 15 项 Python 探针测试；另验证低空间准入边界及停止/导出不受 BEGIN 余量限制。实际 JSON 控制台烟测导出 3 条、1752 字节，核对首尾帧、精确字节数、错误备份 tuple 拒绝与确认 RESET。ESP-IDF 5.5.2 官方分区工具通过 4 MB 表校验。
 
@@ -174,7 +174,7 @@ P1/P2 阶段结束前已重新同步当次 boot 的 UTC 锚点（仅 RAM），�
 
 ## 在另一台电脑继续开发
 
-项目仓库为私有仓库，先登录有访问权限的 GitHub 账号：
+项目仓库地址：`https://github.com/pzzp5252/dji-remote-c3`：
 
 ```sh
 gh repo clone pzzp5252/dji-remote-c3
@@ -189,7 +189,7 @@ idf.py -B build-c3 -D IDF_TARGET=esp32c3 -D SDKCONFIG=sdkconfig.c3 -D SDKCONFIG_
 
 烧录时将上文示例端口替换为新电脑的实际串口（Windows 如 `COM5`）。仅拉取项目或构建不会修改板内配对信息；不需要执行 `erase-flash` 或重新配对。仓库不包含本机工具链、构建缓存、原机 Flash 备份、NVS 或串口日志。
 
-当前源码包含 V1-P1 拍摄状态机、V1-P2 持久主账与 USB 管理、V1-P3 手机 GATT/状态通知/快照日志同步，以及可直接导入的 [Web Bluetooth ESM 客户端](../phone/ble-client.mjs)。[动作模板/事件契约](../schema/events.md)、[MP4 元数据探针](../schema/inspect-mp4.md) 与下述电脑端转换、USB 管理、A/B 独立匹配及正式归档工具已提供。手机页面、PWA 与 Mac 全部主机回归现已完成；已验证独立 Chrome 进程重启后在服务器关闭的离线状态打开页面、读取模板和演示交互。真实手机 HTTPS/BLE、Action 6 MP4 时间含义与分文件特征仍需实测，详见 [开发交接](development-handoff.md)。
+当前源码包含 V1-P1 拍摄状态机、V1-P2 持久主账与 USB 管理、V1-P3 手机 GATT/状态通知/快照日志同步、V4 模块化手机场记工作台（`33` 个逻辑 `.mjs` 模块 + `7` 套 2026 GMP 预设、PWA 离线缓存 `dji-field-ui-v16`、`tools/serve_https.py`），以及可直接导入的 [Web Bluetooth ESM 客户端](../phone/ble-client.mjs)。[动作模板/事件契约](../schema/events.md)、[MP4 元数据探针](../schema/inspect-mp4.md) 与下述电脑端转换、USB 管理、A/B 独立匹配及正式归档工具已提供。Action 6 MP4 实拍时间含义与分文件特征仍需实测，详见 [开发交接](development-handoff.md)。
 
 工具按个人使用设计，不做云平台、视频监看、转码或大文件 SHA-256。归档工具必须只读原片，不删除、不移动、不修改原片名称；仅向新目录生成副本，同名不覆盖，废片只标记，不确定的匹配留待确认。
 
@@ -234,7 +234,7 @@ python3 tools/archive_project.py --log project.jsonl --cam-a 原片A --cam-b 原
 
 复制验证仅检查精确字节数与 MP4 容器元数据，不是全文无损或可解码证明。命令输出 JSON 报告；存在匹配/复制异常或未验证文件时返回 1，仍应查看已生成的核对表，不要仅凭退出码删除原片或归档。备份日志与素材目录不得被输出目录覆盖。
 
-主机合成素材/模拟串口的 16 项行为测试已通过：
+主机合成素材/模拟串口的 18 项行为测试已通过：
 
 ```sh
 python3 -m unittest discover -s tests -p test_archive_pipeline.py

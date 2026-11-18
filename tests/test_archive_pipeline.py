@@ -565,6 +565,134 @@ class PipelineBehavior(unittest.TestCase):
         self.assertEqual(workbook_rows(report["workbook_path"])["拍摄汇总"][1][0], 1)
         fixture.assert_sources(self)
 
+    def test_gmp_record4_docx_streaming_vmerge_gridspan_corrections_and_scheme_reject(self):
+        word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        def w_p(text):
+            return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+        def w_cell(text, *, vmerge=None, grid_span=None):
+            props = []
+            if grid_span is not None:
+                props.append(f'<w:gridSpan w:val="{grid_span}"/>')
+            if vmerge == "restart":
+                props.append('<w:vMerge w:val="restart"/>')
+            elif vmerge == "continue":
+                props.append("<w:vMerge/>")
+            tc_pr = f"<w:tcPr>{''.join(props)}</w:tcPr>" if props else ""
+            return f"<w:tc>{tc_pr}<w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>"
+        def w_row(cells):
+            return f"<w:tr>{''.join(cells)}</w:tr>"
+
+        record4_docx = self.fixture.root / "zone_record.docx"
+        static_rows = [
+            w_row([w_cell(h) for h in ("序号", "测试房间/编号", "测试项目", "测试描述", "可接受标准要求", "测试结果是否符合要求")]),
+            w_row([w_cell("1"), w_cell("灌装间（CLZ-09-2-J10）"), w_cell("隔离器内层流气流"), w_cell("检查一"), w_cell("标准A"), w_cell("是（）")]),
+            w_row([w_cell("2"), w_cell("灌装间（CLZ-09）B级区"), w_cell("隔离器内层流气流"), w_cell("检查二"), w_cell("标准A"), w_cell("是（）")]),
+            w_row([w_cell("3"), w_cell("轧盖间（CLZ-08-2-J11）", vmerge="restart"), w_cell("层流罩气流"), w_cell("检查三"), w_cell("标准A"), w_cell("是（）")]),
+            w_row([w_cell("4"), w_cell("", vmerge="continue"), w_cell("RABS气流"), w_cell("检查四"), w_cell("标准A"), w_cell("是（）")]),
+            w_row([w_cell("备注：附件____：静态视频", grid_span=6)]),
+        ]
+        dynamic_rows = [
+            w_row([w_cell(h) for h in ("序号", "测试房间/编号", "测试项目", "测试描述", "可接受标准要求", "测试结果是否符合要求")]),
+            w_row([w_cell("1"), w_cell("灌装间（2-M10）→轧盖间（2-M11）孔洞"), w_cell("孔洞气流"), w_cell("动态检查"), w_cell("标准B"), w_cell("是（）")]),
+        ]
+        after_rows = [
+            w_row([w_cell(h) for h in ("序号", "测试房间/编号", "测试项目", "测试描述", "可接受标准要求", "测试结果是否符合要求")]),
+            w_row([w_cell("99"), w_cell("不应采集"), w_cell("记录5后行"), w_cell("忽略"), w_cell("标准A"), w_cell("是（）")]),
+        ]
+        doc_xml = (
+            f'<?xml version="1.0" encoding="UTF-8"?>'
+            f'<w:document xmlns:w="{word_ns}"><w:body>'
+            + w_p("记录1 人员培训")
+            + w_p("记录4 气流流型测试（烟雾测试）")
+            + w_p("后超滤区气流流型静态测试")
+            + f"<w:tbl>{''.join(static_rows)}</w:tbl>"
+            + w_p("检查人/日期：复核人/日期：融浆区气流流型动态测试")
+            + f"<w:tbl>{''.join(dynamic_rows)}</w:tbl>"
+            + w_p("记录5 确认结论")
+            + f"<w:tbl>{''.join(after_rows)}</w:tbl>"
+            + "</w:body></w:document>"
+        )
+        with zipfile.ZipFile(record4_docx, "w") as archive:
+            archive.writestr("word/document.xml", doc_xml.encode("utf-8"))
+
+        corrections_path = self.fixture.root / "corrections.json"
+        corrections_path.write_text(json.dumps({
+            "schema_version": 1,
+            "templates": {
+                "GMP_TEST": {
+                    "actions": {
+                        "S04": {"group_replace": [["CLZ-08-2-J11", "CLZ-05-2-H16"]]},
+                    }
+                }
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+
+        out_json = self.fixture.root / "out_gmp.json"
+        rc = convert_main([
+            str(record4_docx),
+            "--template-id", "GMP_TEST",
+            "--template-name", "测试记录4",
+            "--corrections", str(corrections_path),
+            "--output", str(out_json),
+        ])
+        self.assertEqual(rc, 0)
+        parsed = json.loads(out_json.read_text(encoding="utf-8"))
+        self.assertEqual(parsed["source_doc"], "zone_record")
+        self.assertEqual(parsed["default_criteria"], "标准A")
+        self.assertEqual([a["action_id"] for a in parsed["actions"]], ["S01", "S02", "S03", "S04", "D01"])
+        self.assertEqual(parsed["actions"][0]["name"], "隔离器内层流气流")
+        self.assertEqual(parsed["actions"][1]["name"], "隔离器内层流气流")
+        self.assertEqual(parsed["actions"][0]["room_key"], "CLZ-09")
+        self.assertEqual(parsed["actions"][0]["doc_ref"], {"section": "后超滤区气流流型静态测试", "seq": "1"})
+        self.assertEqual(parsed["actions"][3]["group"], "轧盖间（CLZ-05-2-H16）")
+        self.assertEqual(parsed["actions"][3]["room_key"], "CLZ-05")
+        self.assertEqual(parsed["actions"][4]["room_key"], "房间孔洞")
+        self.assertEqual(parsed["actions"][4]["doc_ref"], {"section": "融浆区气流流型动态测试", "seq": "1"})
+        self.assertEqual(parsed["actions"][4]["criteria"], "标准B")
+        self.assertNotIn("criteria", parsed["actions"][0])
+        self.assertTrue(all(a["points"] == [] for a in parsed["actions"]))
+
+        filtered = convert_table_to_actions(
+            record4_docx,
+            "GMP_TEST_THAW",
+            "融浆区确认",
+            section_filter="融浆区",
+            area_name="融浆区",
+        )
+        self.assertEqual(filtered["area_name"], "融浆区")
+        self.assertEqual([a["action_id"] for a in filtered["actions"]], ["D01"])
+        self.assertEqual(filtered["actions"][0]["doc_ref"], {"section": "融浆区气流流型动态测试", "seq": "1"})
+
+        scheme_docx = self.fixture.root / "分装一区确认方案.docx"
+        scheme_xml = (
+            f'<?xml version="1.0" encoding="UTF-8"?>'
+            f'<w:document xmlns:w="{word_ns}"><w:body>'
+            + w_p("分装一区层流气流流型确认方案")
+            + w_p("填写记录4。")
+            + "</w:body></w:document>"
+        )
+        with zipfile.ZipFile(scheme_docx, "w") as archive:
+            archive.writestr("word/document.xml", scheme_xml.encode("utf-8"))
+        with self.assertRaisesRegex(ValueError, "确认方案"):
+            convert_table_to_actions(scheme_docx, "GMP_SCHEME", "方案误导")
+
+    def test_archive_summary_includes_complete_reason_and_description(self):
+        fixture = self.fixture
+        actions = json.loads(fixture.actions_path.read_text(encoding="utf-8"))
+        actions["actions"][0]["description"] = "检查灌装间A级层流下方气流"
+        fixture.actions_path.write_text(json.dumps(actions, ensure_ascii=False), encoding="utf-8")
+        fixture.take(action="S01", duration=12)
+        fixture.take(action="D27", point="P01", duration=10)
+        fixture.events[-1].update(complete=False, reason="unexpected_stop")
+        fixture.flush()
+        fixture.late_anchor()
+        result = fixture.archive()
+        rows = workbook_rows(result["workbook_path"])["拍摄汇总"]
+        self.assertEqual(rows[0][-3:], ["complete", "reason", "测试描述"])
+        self.assertEqual(rows[1][-3:], [True, "stopped", "检查灌装间A级层流下方气流"])
+        self.assertEqual(rows[2][16:18], [False, "unexpected_stop"])
+        self.assertIsNone(rows[2][18] if len(rows[2]) > 18 else None)
+
 
 if __name__ == "__main__":
     unittest.main()

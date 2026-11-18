@@ -1,0 +1,66 @@
+export default {
+  "schema_version": 1,
+  "template_id": "GMP_SMOKE_GLOB_UF_2026R1",
+  "template_name": "球蛋白超滤灭活区层流气流流型确认（2026版）",
+  "source_doc": "C、D级区域层流气流流型确认记录",
+  "area_name": "球蛋白超滤灭活区",
+  "default_criteria": "烟雾为单向流方式、无湍流、烟雾清晰，并拍摄视频。",
+  "actions": [
+    {
+      "action_id": "S01",
+      "name": "层流罩静态气流",
+      "type": "static",
+      "group": "CLZ-02（2-F20整衣间）",
+      "description": "检查整衣间层流下方气流流型",
+      "doc_ref": {
+        "section": "球蛋白超滤灭活区气流流型静态测试",
+        "seq": "1"
+      },
+      "order": 1,
+      "points": [],
+      "room_key": "CLZ-02"
+    },
+    {
+      "action_id": "S02",
+      "name": "层流罩静态气流",
+      "type": "static",
+      "group": "CLZ-03（2-F30过滤间）",
+      "description": "检查过滤间层流下方气流流型",
+      "doc_ref": {
+        "section": "球蛋白超滤灭活区气流流型静态测试",
+        "seq": "2"
+      },
+      "order": 2,
+      "points": [],
+      "room_key": "CLZ-03"
+    },
+    {
+      "action_id": "D01",
+      "name": "层流罩动态气流",
+      "type": "dynamic",
+      "group": "CLZ-02（2-F20整衣间）",
+      "description": "模拟洁净服整理过程中，层流下方气流流型",
+      "doc_ref": {
+        "section": "球蛋白超滤灭活区气流流型动态测试",
+        "seq": "1"
+      },
+      "order": 3,
+      "points": [],
+      "room_key": "CLZ-02"
+    },
+    {
+      "action_id": "D02",
+      "name": "层流罩动态气流",
+      "type": "dynamic",
+      "group": "CLZ-03（2-F30过滤间）",
+      "description": "模拟滤器暂放与除菌过滤过程中，层流下方气流流型",
+      "doc_ref": {
+        "section": "球蛋白超滤灭活区气流流型动态测试",
+        "seq": "2"
+      },
+      "order": 4,
+      "points": [],
+      "room_key": "CLZ-03"
+    }
+  ]
+};

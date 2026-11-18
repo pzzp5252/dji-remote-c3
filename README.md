@@ -1,10 +1,10 @@
 # DJI-Remote – Multi-Camera Remote Control for DJI Osmo Action Cameras
 
-**CORE-ESP32-C3 headless dual-camera port:** [Chinese setup, GPIOs, pairing and build guide](docs/headless-c3.md). Uses the on-board BOOT button and D4/D5 LEDs, with no display or GPS.
+- **硬件与无屏幕双机固件（`main/headless/`、`ble/`、`partitions.c3.csv`）**：合宙 CORE-ESP32-C3 经典款（4 MB Flash，板载 BOOT 键 + D4/D5 状态灯），并发连接双机 DJI Osmo Action 6 与手机 BLE GATT 服务；支持 A 机 / B 机 / 双机持久选机准入（`target_cameras`）、LittleFS 1.94 MiB 五类事件追加主账与 USB 校验重置。详见 [`docs/headless-c3.md`](docs/headless-c3.md)。
 
-**Phone control page (operator UI under acceptance):** [Open the page](phone/index.html), [BLE protocol](schema/phone-ble.md), and reusable [native ESM client](phone/ble-client.mjs). Serve over HTTPS; `?mock=1` previews without connecting hardware.
+- **V4 手机端 Web Bluetooth 场记工作台（`phone/`）**：零构建原生 ESM 模块化架构（共 `40` 个 `.mjs` 模块：包含 `33` 个核心/视图/控制器/弹窗/索引模块与内置 `7` 套 2026 GMP 洁净室层流烟雾验证预设清单），提供 `[看板] · [现场] · [记录]` 三视图、主按钮内嵌录像计时、A/B 状态与选机合一控制、多选批量作废/改归属，以及 `dji-field-ui-v16` Service Worker 全静态离线预缓存（`47` 项资源）。iPhone 请通过可信局域网 HTTPS（[`tools/serve_https.py`](tools/serve_https.py)）在 **Bluefy** 浏览器打开（[入口页](phone/index.html)）；`?mock=1` 支持免硬件离线演示。BLE 分片与客户端协议见 [`schema/phone-ble.md`](schema/phone-ble.md)，当前进度检查点见 [`docs/development-handoff.md`](docs/development-handoff.md)。
 
-**Desktop template / USB / media tools:** [Chinese workflow and CLI](docs/headless-c3.md#电脑端模板usb-备份与视频匹配), including [formal archiving and Excel ledgers](docs/headless-c3.md#电脑端正式归档与核对表); standard-library tools, with `pyserial` only for USB access.
+- **电脑端清单转换、USB 备份与双机归档台账（`tools/`）**：Python 标准库实现 CSV/XLSX/DOCX（含 2026 GMP 记录表四解析与 [`tools/presets_corrections_2026.json`](tools/presets_corrections_2026.json) 勘误）转换、[`tools/usb_manage.py`](tools/usb_manage.py) 字节级备份与安全重置、[`tools/match_media.py`](tools/match_media.py) 双机独立时钟校准匹配，以及 [`tools/archive_project.py`](tools/archive_project.py) 只读原片复制归档与三工作表 `.xlsx` 核对总表生成。详见 [电脑端工作流与归档说明](docs/headless-c3.md#电脑端模板usb-备份与视频匹配)。
 
 ### Powered by M5Stack Basic V2.7 (ESP32) and Waveshare ESP32-S3-LCD-1.9 (ESP32-S3)
 

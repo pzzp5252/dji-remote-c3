@@ -1,0 +1,38 @@
+export default {
+  "schema_version": 1,
+  "template_id": "GMP_SMOKE_THAW_2026R1",
+  "template_name": "融浆区层流气流流型确认（2026版）",
+  "source_doc": "C、D级区域层流气流流型确认记录",
+  "area_name": "融浆区",
+  "default_criteria": "烟雾为单向流方式、无湍流、烟雾清晰，并拍摄视频。",
+  "actions": [
+    {
+      "action_id": "S01",
+      "name": "层流罩静态气流",
+      "type": "static",
+      "group": "CLZ-01（2-C12融浆间）",
+      "description": "检查融浆间层流下方气流流型",
+      "doc_ref": {
+        "section": "融浆区气流流型静态测试",
+        "seq": "1"
+      },
+      "order": 1,
+      "points": [],
+      "room_key": "CLZ-01"
+    },
+    {
+      "action_id": "D01",
+      "name": "层流罩动态气流",
+      "type": "dynamic",
+      "group": "CLZ-01（2-C12融浆间）",
+      "description": "模拟血浆投料过程中，层流下方气流流型",
+      "doc_ref": {
+        "section": "融浆区气流流型动态测试",
+        "seq": "1"
+      },
+      "order": 2,
+      "points": [],
+      "room_key": "CLZ-01"
+    }
+  ]
+};

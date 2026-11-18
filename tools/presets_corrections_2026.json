@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "description": "Explicit corrections for known residual typos in the 2026 HVAC Record 4 (.docx) source files whose paper originals have already been amended on site.",
+  "templates": {
+    "GMP_SMOKE_CD_2026R1": {
+      "actions": {
+        "S05": {
+          "group_replace": [
+            ["CLZ-02（2-F30过滤间）", "CLZ-03（2-F30过滤间）"]
+          ],
+          "reason": "Duplicate CLZ-02 group label on row orig 2; paper record corrected to CLZ-03."
+        },
+        "D05": {
+          "group_replace": [
+            ["CLZ-02（2-F30过滤间）", "CLZ-03（2-F30过滤间）"]
+          ],
+          "reason": "Duplicate CLZ-02 group label on row orig 2; paper record corrected to CLZ-03."
+        }
+      }
+    },
+    "GMP_SMOKE_GLOB_UF_2026R1": {
+      "actions": {
+        "S02": {
+          "group_replace": [
+            ["CLZ-02（2-F30过滤间）", "CLZ-03（2-F30过滤间）"]
+          ],
+          "reason": "Duplicate CLZ-02 group label on Globulin UF static row 2; paper record corrected to CLZ-03."
+        },
+        "D02": {
+          "group_replace": [
+            ["CLZ-02（2-F30过滤间）", "CLZ-03（2-F30过滤间）"]
+          ],
+          "reason": "Duplicate CLZ-02 group label on Globulin UF dynamic row 2; paper record corrected to CLZ-03."
+        }
+      }
+    },
+    "GMP_SMOKE_AREA1_2026R1": {
+      "actions": {
+        "S05": {
+          "text_replace": [
+            ["CLZ-14-2-M09", "CLZ-06-2-J09"]
+          ],
+          "reason": "Zone-2 equipment ID left in Zone-1 table; paper record uses CLZ-06-2-J09."
+        },
+        "S06": {
+          "text_replace": [
+            ["CLZ-18-2-K14", "CLZ-07-2-H14"]
+          ],
+          "reason": "Zone-2 equipment ID left in Zone-1 table; paper record uses CLZ-07-2-H14."
+        },
+        "S07": {
+          "text_replace": [
+            ["CLZ-17-2-K18", "CLZ-04-2-H19"]
+          ],
+          "reason": "Zone-2 equipment ID left in Zone-1 table; paper record uses CLZ-04-2-H19."
+        },
+        "S08": {
+          "text_replace": [
+            ["CLZ-16-2-K19", "CLZ-05-2-H16"]
+          ],
+          "reason": "Zone-2 equipment ID left in Zone-1 table; paper record uses CLZ-05-2-H16."
+        },
+        "S12": {
+          "description_replace": [
+            ["检查灌装间A级RABS", "检查轧盖间A级RABS"]
+          ],
+          "reason": "Copy-paste room name typo in capping room RABS static description."
+        },
+        "S14": {
+          "text_replace": [
+            ["2-M10", "2-J10"],
+            ["2-M11", "2-J11"]
+          ],
+          "reason": "Zone-2 room codes left in Zone-1 pass-through item."
+        },
+        "S15": {
+          "text_replace": [
+            ["2-M11", "2-J11"]
+          ],
+          "reason": "Zone-2 room code left in Zone-1 pass-through item."
+        },
+        "D26": {
+          "text_replace": [
+            ["灌装间（CLZ-09-2-J10）", "灌装间（CLZ-09-2-J10）"],
+            ["灌装间（CLZ-09-2-J10", "灌装间（CLZ-09-2-J10）"]
+          ],
+          "reason": "Missing closing full-width parenthesis after CLZ-09-2-J10."
+        },
+        "D39": {
+          "text_replace": [
+            ["灭菌后室（CLZ-06-2-J09)", "灭菌后室（CLZ-06-2-J09）"]
+          ],
+          "reason": "Half-width closing parenthesis fixed to full-width."
+        },
+        "D42": {
+          "text_replace": [
+            ["精洗间（CLZ-04-2-H16）", "精洗间（CLZ-05-2-H16）"]
+          ],
+          "reason": "CLZ-04 typo on fine-wash room; paper record uses CLZ-05-2-H16."
+        }
+      }
+    },
+    "GMP_SMOKE_AREA2_2026R1": {
+      "actions": {
+        "S12": {
+          "description_replace": [
+            ["检查灌装间A级RABS", "检查轧盖间A级RABS"]
+          ],
+          "reason": "Copy-paste room name typo in capping room RABS static description."
+        },
+        "D45": {
+          "text_replace": [
+            ["灭菌后室（CLZ-14-2-M09)", "灭菌后室（CLZ-14-2-M09）"]
+          ],
+          "reason": "Half-width closing parenthesis fixed to full-width."
+        }
+      }
+    },
+    "GMP_SMOKE_AREA3_2026R1": {
+      "actions": {
+        "S05": {
+          "text_replace": [
+            ["CLZ-14-2-M09", "CLZ-G08-3-G08"]
+          ],
+          "reason": "Zone-2 equipment ID left in Zone-3 table; paper record uses CLZ-G08-3-G08."
+        },
+        "S06": {
+          "text_replace": [
+            ["CLZ-18-2-K14", "CLZ-F11-3-F11"]
+          ],
+          "reason": "Zone-2 equipment ID left in Zone-3 table; paper record uses CLZ-F11-3-F11."
+        },
+        "S07": {
+          "text_replace": [
+            ["CLZ-17-2-K18", "CLZ-F09-3-F09"]
+          ],
+          "reason": "Zone-2 equipment ID left in Zone-3 table; paper record uses CLZ-F09-3-F09."
+        },
+        "S08": {
+          "text_replace": [
+            ["CLZ-16-2-K19", "CLZ-F06-3-F06"]
+          ],
+          "reason": "Zone-2 equipment ID left in Zone-3 table; paper record uses CLZ-F06-3-F06."
+        },
+        "S12": {
+          "description_replace": [
+            ["检查灌装间A级RABS", "检查轧盖间A级RABS"]
+          ],
+          "reason": "Copy-paste room name typo in capping room RABS static description."
+        },
+        "S14": {
+          "text_replace": [
+            ["2-M10", "3-G10"],
+            ["2-M11", "3-G11"]
+          ],
+          "reason": "Zone-2 room codes left in Zone-3 pass-through item."
+        },
+        "S15": {
+          "text_replace": [
+            ["2-M10", "3-G10"],
+            ["2-M11", "3-G11"]
+          ],
+          "reason": "Zone-2 room codes left in Zone-3 pass-through item."
+        },
+        "S16": {
+          "text_replace": [
+            ["2-M10", "3-G10"],
+            ["2-M11", "3-G11"]
+          ],
+          "reason": "Zone-2 room codes left in Zone-3 pass-through item."
+        },
+        "D51": {
+          "text_replace": [
+            ["灭菌后室（CLZ-G08-3-G08)", "灭菌后室（CLZ-G08-3-G08）"]
+          ],
+          "reason": "Half-width closing parenthesis fixed to full-width."
+        }
+      }
+    }
+  }
+}

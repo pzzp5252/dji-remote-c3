@@ -566,3 +566,67 @@ test('disconnect during connection setup closes a late GATT link and never issue
   assert.equal(device.gatt.connected, false);
   assert.equal(device.writes.length, 0);
 });
+
+test('safety STOP unshifts ahead of queued unstarted requests without preempting in-flight command and gets 33rd slot', async t => {
+  const { client, device } = await connected(t);
+  const first = client.getStatus();
+  await until(() => device.commands.length === 1);
+  const queued = [];
+  for (let i = 0; i < 31; i++) {
+    queued.push(client.syncTime(1794220000000 + i));
+  }
+  await assert.rejects(client.syncTime(1794220000999), error => error.code === 'request_backlog_full');
+  const stopPromise = client.request({ cmd: 'STOP' }, { priority: 'safety' });
+  device.reply(0);
+  await first;
+  await until(() => device.commands.length === 2);
+  assert.equal(device.commands[1].data.cmd, 'STOP');
+  device.reply(1);
+  await stopPromise;
+  for (let i = 0; i < 31; i++) {
+    await until(() => device.commands.length === 3 + i);
+    device.reply(2 + i);
+  }
+  await Promise.all(queued);
+});
+
+test('AbortSignal cancels unstarted queued command cleanly but never interrupts started command', async t => {
+  const { client, device } = await connected(t);
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(
+    client.request({ cmd: 'START', action_id: 'S01', point_id: '', target_cameras: 3, command_id: 'C0' }, { signal: preAborted.signal }),
+    error => error.code === 'cancelled'
+  );
+  assert.equal(client.connected, true);
+
+  const first = client.getStatus();
+  await until(() => device.commands.length === 1);
+  const queuedCtrl = new AbortController();
+  const startQueued = client.request(
+    { cmd: 'START', action_id: 'S01', point_id: '', target_cameras: 3, command_id: 'C1' },
+    { signal: queuedCtrl.signal }
+  );
+  queuedCtrl.abort();
+  await assert.rejects(startQueued, error => error.code === 'cancelled');
+  assert.equal(client.connected, true);
+
+  device.reply(0);
+  await first;
+  assert.equal(device.commands.length, 1);
+
+  const startedCtrl = new AbortController();
+  const active = client.request({ cmd: 'GET_STATUS' }, { signal: startedCtrl.signal });
+  await until(() => device.commands.length === 2);
+  startedCtrl.abort();
+  assert.equal(client.connected, true);
+  device.reply(1);
+  await active;
+});
+
+test('missing writeValueWithResponse rejects connect with explicit Bluefy guidance', async () => {
+  const device = new FakeDevice();
+  delete device.rx.writeValueWithResponse;
+  const client = new DjiBleClient({ bluetooth: { requestDevice: async () => device } });
+  await assert.rejects(client.connect(), error => error.code === 'unsupported_write_with_response' && error.message.includes('Bluefy'));
+});

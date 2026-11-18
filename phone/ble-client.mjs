@@ -161,7 +161,10 @@ export class DjiBleClient {
       const info = JSON.parse(decoder.decode(infoBytes));
       if (!object(info) || info.protocol !== 1 || info.header_bytes !== HEADER ||
           info.max_command_bytes !== MAX_COMMAND || info.max_message_bytes !== MAX_MESSAGE ||
-          info.default_packet_bytes !== 20 || typeof session.rx.writeValueWithResponse !== 'function') throw fault('invalid_info');
+          info.default_packet_bytes !== 20) throw fault('invalid_info');
+      if (typeof session.rx.writeValueWithResponse !== 'function') {
+        throw new BleClientError('unsupported_write_with_response', '当前手机浏览器不支持带确认的蓝牙写入，请升级或更换 Bluefy 版本');
+      }
       session.onValue = event => {
         if (this.session !== session || !session.active || !session.ready || event.target !== session.tx) return;
         try { this._receive(session, event.target.value); }
@@ -211,6 +214,8 @@ export class DjiBleClient {
   _finish(session, job, error, result) {
     if (!session.pending.delete(job.id)) return;
     clearTimeout(job.timer);
+    job.cleanupAbort?.();
+    job.cleanupAbort = null;
     if (session.stream === job) session.stream = null;
     if (job.log) {
       job.log.queue.length = 0;
@@ -229,7 +234,10 @@ export class DjiBleClient {
     if (!object(command) || typeof command.cmd !== 'string') return Promise.reject(fault('invalid_command'));
     const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.reject(fault('invalid_timeout'));
-    if (session.pending.size >= 32) return Promise.reject(fault('request_backlog_full'));
+    const isSafetyStop = command.cmd === 'STOP' && options?.priority === 'safety';
+    const signal = options?.signal;
+    if (signal?.aborted) return Promise.reject(fault('cancelled'));
+    if (session.pending.size >= (isSafetyStop ? 33 : 32)) return Promise.reject(fault('request_backlog_full'));
     if (session.nextId > 65535) return Promise.reject(fault('request_ids_exhausted'));
     if (log && session.stream) return Promise.reject(fault('log_busy', { after_seq: log.cursor }));
     const id = session.nextId++;
@@ -237,11 +245,22 @@ export class DjiBleClient {
     try { packets = encodeMessage(KINDS.COMMAND, id, command, { packetBytes: this.packetBytes }); }
     catch (error) { return Promise.reject(error); }
     const promise = new Promise((resolve, reject) => {
-      const job = { id, packets, timeoutMs, log, resolve, reject, started: false };
+      const job = { id, packets, timeoutMs, log, resolve, reject, started: false, cleanupAbort: null };
       job.done = new Promise(doneResolve => { job.doneResolve = doneResolve; });
       session.pending.set(id, job);
       if (log) session.stream = job;
-      session.queue.push(job);
+      if (isSafetyStop) session.queue.unshift(job);
+      else session.queue.push(job);
+      if (signal && typeof signal.addEventListener === 'function') {
+        const onAbort = () => {
+          if (job.started || !session.pending.has(job.id)) return;
+          const idx = session.queue.indexOf(job);
+          if (idx !== -1) session.queue.splice(idx, 1);
+          this._finish(session, job, fault('cancelled', { request_id: job.id }));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        job.cleanupAbort = () => signal.removeEventListener('abort', onAbort);
+      }
       this._touch(session, job);
     });
     // _pump handles all transport errors and never rejects in the background.
@@ -256,6 +275,8 @@ export class DjiBleClient {
         const job = session.queue.shift();
         if (!session.pending.has(job.id)) continue;
         job.started = true;
+        job.cleanupAbort?.();
+        job.cleanupAbort = null;
         this._touch(session, job);
         for (const packet of job.packets) {
           if (!session.active || !session.pending.has(job.id)) break;

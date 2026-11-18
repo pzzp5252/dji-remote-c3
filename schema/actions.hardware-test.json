@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "template_id": "HARDWARE_ACCEPTANCE_V1",
+  "template_name": "仅硬件验收测试（非正式业务清单，原名称未恢复）",
+  "actions": [
+    {
+      "action_id": "S01",
+      "name": "仅硬件测试 S01（原名称未恢复）",
+      "type": "static",
+      "group": "仅硬件测试",
+      "order": 1,
+      "points": [{ "point_id": "P01", "name": "原名称未恢复", "orphan": true }]
+    },
+    {
+      "action_id": "D27",
+      "name": "仅硬件测试 D27（原名称未恢复）",
+      "type": "dynamic",
+      "group": "仅硬件测试",
+      "order": 2,
+      "points": [{ "point_id": "P01", "name": "原名称未恢复", "orphan": true }]
+    }
+  ]
+}
